@@ -1,2 +1,2 @@
 # nib
-Nibble-based entropy codec
+High-performance nibble-based entropy codec
