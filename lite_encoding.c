@@ -97,11 +97,11 @@ void le_model_init(le_model *model, const uint32_t *histogram, uint32_t num_symb
     {
         uint8_t range = model->cold_max - model->cold_min;
 
-        if (range > 64)
+        if (range >= 64)
             model->cold_num_bits = 8;
-        else if (range > 16)
+        else if (range >= 16)
             model->cold_num_bits = 6;
-        else if (range > 4)
+        else if (range >= 4)
             model->cold_num_bits = 4;
         else
             model->cold_num_bits = 2;
@@ -139,7 +139,21 @@ void le_encode_byte(le_stream *s, le_model *model, uint8_t value)
 
         // or escape code
         le_write_nibble(s, MODEL_ESCAPE);
-        le_write_byte(s, value);
+
+        uint8_t residual = value - model->cold_min;
+
+        switch(model->cold_num_bits)
+        {
+            case 2 : le_write_dibit(s, residual); break;
+            case 4 : le_write_nibble(s, residual); break;
+            case 6 : 
+                {
+                    le_write_dibit(s, residual >> 4);
+                    le_write_nibble(s, residual&0xf);
+                    break;
+                }
+            case 8 : le_write_byte(s, residual);break;
+        }
     }
 }
 
@@ -156,7 +170,16 @@ uint8_t le_decode_byte(le_stream *s, le_model *model)
 
     uint8_t value;
     if (nibble == MODEL_ESCAPE)
-        value = le_read_byte(s);
+    {
+        switch(model->cold_num_bits)
+        {
+            case 2 : value = le_read_dibit(s); break;
+            case 4 : value = le_read_nibble(s); break;
+            case 6 : value = (le_read_dibit(s) << 4) | le_read_nibble(s); break;
+            case 8 : value = le_read_byte(s);break;
+        }
+        value += model->cold_min;
+    }
     else
         value = model->hot_values[nibble];
 

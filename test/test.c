@@ -70,14 +70,14 @@ TEST nibble14(void)
 
     ASSERT_EQ(15, model.cold_min);
     ASSERT_EQ(19, model.cold_max);
-    ASSERT_EQ(2, model.cold_num_bits);
+    ASSERT_EQ(4, model.cold_num_bits);
 
     le_begin_encode(&stream);
 
     for(uint32_t i=0; i<sizeof(sequence); ++i)
         le_encode_byte(&stream, &model, sequence[i]);
 
-    ASSERT_EQ(22, le_end_encode(&stream));
+    ASSERT_EQ(19, le_end_encode(&stream));
 
     le_begin_decode(&stream);
 
