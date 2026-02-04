@@ -33,6 +33,13 @@ freely, subject to the following restrictions:
 #include <string.h>
 #include <stdbool.h>
 
+enum le_mode
+{
+    le_mode_idle,
+    le_mode_encode,
+    le_mode_decode
+};
+
 
 typedef struct le_stream
 {
@@ -40,6 +47,7 @@ typedef struct le_stream
     uint8_t bit;
     size_t position;
     size_t size;
+    enum le_mode mode;
 } le_stream;
 
 
@@ -82,6 +90,18 @@ void le_encode_byte(le_stream *s, le_model *model, uint8_t value);
 uint8_t le_decode_byte(le_stream *s, le_model *model);
 
 
+// histogram structure utility as nibble-14 is static
+#define LE_HISTOGRAM_SIZE (256)
+
+typedef struct le_histogram
+{
+    uint32_t count[LE_HISTOGRAM_SIZE];
+    uint32_t num_symbols;
+} le_histogram;
+
+static void histogram_init(le_histogram* h, uint32_t num_symbols);
+
+
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_init(le_stream *s, void* buffer, size_t size)
 {
@@ -90,25 +110,31 @@ static inline void le_init(le_stream *s, void* buffer, size_t size)
 
     s->buffer = (uint8_t*) buffer;
     s->size = size;
+    s->mode = le_mode_idle;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_begin_encode(le_stream* s)
 {
+    assert(s->mode == le_mode_idle);
     memset(s->buffer, 0, s->size);
+
     s->position = 0;
     s->bit = 0;
+    s->mode = le_mode_encode;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline size_t le_end_encode(le_stream *s)
 {
-    assert(s != NULL);
+    assert(s->mode == le_mode_encode);
 
     size_t final_size = s->position;
 
     if (s->bit > 0)
         final_size++;
+
+    s->mode = le_mode_idle;
 
     return final_size;
 }
@@ -116,19 +142,24 @@ static inline size_t le_end_encode(le_stream *s)
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_begin_decode(le_stream* s)
 {
+    assert(s->mode == le_mode_idle);
+
     s->position = 0;
     s->bit = 0;
+    s->mode = le_mode_decode;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_end_decode(le_stream* s)
 {
-    (void) s;
+    assert(s->mode == le_mode_decode);
+    s->mode = le_mode_idle;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_write_nibble(le_stream *s, uint8_t nibble)
 {
+    assert(s->mode == le_mode_encode);
     assert(nibble <= 0x0F);
     assert(s->position < s->size);
 
@@ -175,6 +206,7 @@ static inline void le_write_nibble(le_stream *s, uint8_t nibble)
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline uint8_t le_read_nibble(le_stream *s)
 {
+    assert(s->mode == le_mode_decode);
     assert(s->position < s->size);
 
     uint8_t nibble;
@@ -226,6 +258,7 @@ static inline uint8_t le_read_nibble(le_stream *s)
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_write_dibit(le_stream *s, uint8_t dibit)
 {
+    assert(s->mode == le_mode_encode);
     assert(dibit <= 0x03);
     assert(s->position < s->size);
 
@@ -243,6 +276,7 @@ static inline void le_write_dibit(le_stream *s, uint8_t dibit)
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_write_byte(le_stream *s, uint8_t value)
 {
+    assert(s->mode == le_mode_encode);
     if (s->bit == 0) 
     {
         assert(s->position < s->size);
@@ -265,6 +299,7 @@ static inline void le_write_byte(le_stream *s, uint8_t value)
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline uint8_t le_read_dibit(le_stream *s)
 {
+    assert(s->mode == le_mode_decode);
     assert(s->position < s->size);
 
     // Extract 2 bits based on the current bit offset (reading from MSB to LSB)
@@ -285,6 +320,7 @@ static inline uint8_t le_read_dibit(le_stream *s)
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline uint8_t le_read_byte(le_stream *s)
 {
+    assert(s->mode == le_mode_decode);
     uint8_t value = 0;
 
     if (s->bit == 0)
@@ -310,6 +346,15 @@ static inline uint8_t le_read_byte(le_stream *s)
     }
 
     return value;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+static inline void histogram_init(le_histogram* h, uint32_t num_symbols)
+{
+    assert(num_symbols > 3 && num_symbols <= 256);
+    h->num_symbols = num_symbols;
+    for(uint32_t i=0; i<num_symbols; ++i)
+        h->count[i] = 0;
 }
 
 #endif

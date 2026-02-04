@@ -73,6 +73,8 @@ void le_model_init(le_model *model, const uint32_t *histogram, uint32_t num_symb
 // ----------------------------------------------------------------------------------------------------------------------------
 void le_encode_byte(le_stream *s, le_model *model, uint8_t value)
 {
+    assert(s->mode == le_mode_encode);
+
     // no compression
     if (model->no_compression)
     {
