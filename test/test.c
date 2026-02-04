@@ -68,6 +68,10 @@ TEST nibble14(void)
     le_model model;
     le_model_init(&model, histogram.count, histogram.num_symbols);
 
+    ASSERT_EQ(15, model.cold_min);
+    ASSERT_EQ(19, model.cold_max);
+    ASSERT_EQ(2, model.cold_num_bits);
+
     le_begin_encode(&stream);
 
     for(uint32_t i=0; i<sizeof(sequence); ++i)

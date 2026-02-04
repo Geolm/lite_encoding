@@ -81,6 +81,9 @@ typedef struct le_model
 {
     uint8_t hot_values[14];
     uint8_t last_value;
+    uint8_t cold_min;
+    uint8_t cold_max;
+    uint8_t cold_num_bits;
     bool no_compression;
 } le_model;
 

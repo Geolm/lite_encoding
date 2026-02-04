@@ -68,6 +68,44 @@ void le_model_init(le_model *model, const uint32_t *histogram, uint32_t num_symb
 
     if (total_count > 0 && hot_count * 2 < total_count)
         model->no_compression = true;
+
+    model->cold_min = UINT8_MAX;
+    model->cold_max = 0;
+    for(uint32_t s = 0; s < num_symbols; s++)
+    {
+        // skip hot symbols
+        bool is_hot = false;
+        for (uint32_t i = 0; i < hot_used; i++)
+        {
+            if (model->hot_values[i] == s)
+            {
+                is_hot = true;
+                break;
+            }
+        }
+
+        if (is_hot || histogram[s] == 0)
+            continue;
+
+        if (s < model->cold_min)
+            model->cold_min = (uint8_t)s;
+        if (s > model->cold_max)
+            model->cold_max = (uint8_t)s;
+    }
+
+    if (model->cold_max >= model->cold_min)
+    {
+        uint8_t range = model->cold_max - model->cold_min;
+
+        if (range > 64)
+            model->cold_num_bits = 8;
+        else if (range > 16)
+            model->cold_num_bits = 6;
+        else if (range > 4)
+            model->cold_num_bits = 4;
+        else
+            model->cold_num_bits = 2;
+    }
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
