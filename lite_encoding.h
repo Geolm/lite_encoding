@@ -84,7 +84,6 @@ static size_t le_end_encode(le_stream* s);
 static void le_begin_decode(le_stream* s);
 static void le_end_decode(le_stream* s);
 
-
 static void le_write_byte(le_stream *s, uint8_t value);
 static void le_write_nibble(le_stream *s, uint8_t nibble);
 static void le_write_dibit(le_stream *s, uint8_t dibit);
@@ -96,6 +95,8 @@ static uint8_t le_read_dibit(le_stream *s);
 void le_model_init(le_model *model, const uint32_t *histogram, uint32_t num_symbols);
 void le_encode_byte(le_stream *s, le_model *model, uint8_t value);
 uint8_t le_decode_byte(le_stream *s, le_model *model);
+void le_encode_delta(le_stream *s, int8_t delta);
+int8_t le_decode_delta(le_stream *s);
 void le_model_save(le_stream *s, const le_model *model);
 void le_model_load(le_stream *s, le_model *model);
 

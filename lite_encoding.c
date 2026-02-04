@@ -203,6 +203,58 @@ void le_model_save(le_stream *s, const le_model *model)
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
+static inline uint8_t zigzag8_encode(int8_t v)
+{
+    return (uint8_t)((v << 1) ^ (v >> 7));
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline int8_t zigzag8_decode(uint8_t v)
+{
+    return (int8_t)((v >> 1) ^ -(int8_t)(v & 1));
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+void le_encode_delta(le_stream *s, int8_t delta)
+{
+    uint8_t zz = zigzag8_encode(delta);
+
+    for(uint32_t i = 0; i < 4; i++)
+    {
+        if(zz < 3)
+        {
+            le_write_dibit(s, zz);
+            return;
+        }
+
+        le_write_dibit(s, 3); // escape
+        zz -= 2;
+    }
+
+    le_write_byte(s, zigzag8_encode(delta));
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+int8_t le_decode_delta(le_stream *s)
+{
+    uint8_t accum = 0;
+
+    for(uint32_t i = 0; i < 4; i++)
+    {
+        uint8_t d = le_read_dibit(s);
+
+        if(d < 3)
+            return zigzag8_decode(d + accum);
+
+        // escape
+        accum += 2;
+    }
+
+    // fallback
+    return zigzag8_decode(le_read_byte(s));
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
 void le_model_load(le_stream *s, le_model *model)
 {
     model->no_compression = (le_read_dibit(s) == 1);
