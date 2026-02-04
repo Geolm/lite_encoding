@@ -93,7 +93,7 @@ static inline void le_init(le_stream *s, void* buffer, size_t size)
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static void le_begin_encode(le_stream* s)
+static inline void le_begin_encode(le_stream* s)
 {
    memset(s->buffer, 0, s->size);
 }
@@ -297,6 +297,5 @@ static inline uint8_t le_read_byte(le_stream *s)
     return value;
 }
 
-
-
 #endif
+

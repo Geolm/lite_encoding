@@ -28,9 +28,15 @@ void le_model_init(le_model *model, const uint32_t *histogram, uint32_t num_symb
             bool already = false;
             for (uint32_t j = 0; j < i; j++)
             {
-                if (selected[j] == s) { already = true; break; }
+                if (selected[j] == s) 
+                { 
+                    already = true; 
+                    break; 
+                }
             }
-            if (already) continue;
+
+            if (already) 
+                continue;
 
             if (histogram[s] > max_count)
             {
@@ -118,3 +124,4 @@ uint8_t le_decode_byte(le_stream *s, le_model *model)
     model->last_value = value;
     return value;
 }
+
