@@ -49,17 +49,6 @@ typedef struct le_stream
     enum le_mode mode;
 } le_stream;
 
-// Nibble-14 Encoding Model
-//
-// The Nibble-14 model compresses data by focusing on the 14 most frequent byte values in the input:
-// The model stores the 14 hot values derived from the input histogram.
-// Each byte is encoded as a 4-bit nibble:
-//      0–13 → index into the hot values.
-//      14 → run-length code (RLE) for repeating the previous byte.
-//      15 → escape code, followed by the full byte if it doesn’t match the hot values or RLE.
-//
-// This approach efficiently compresses data with skewed distributions and repeated bytes while keeping the stream compact.
-
 typedef struct le_model
 {
     uint8_t hot_values[14];
@@ -93,8 +82,29 @@ static uint8_t le_read_nibble(le_stream *s);
 static uint8_t le_read_dibit(le_stream *s);
 
 void le_model_init(le_model *model, const uint32_t *histogram, uint32_t num_symbols);
+
+// Nibble-14 Encoding Model
+//
+// The Nibble-14 model compresses data by focusing on the 14 most frequent byte values in the input:
+// The model stores the 14 hot values derived from the input histogram.
+// Each byte is encoded as a 4-bit nibble:
+//      0–13 → index into the hot values.
+//      14 → run-length code (RLE) for repeating the previous byte.
+//      15 → escape code, followed by the full byte if it doesn’t match the hot values or RLE.
+//
+// This approach efficiently compresses data with skewed distributions and repeated bytes while keeping the stream compact.
+
 void le_encode_byte(le_stream *s, le_model *model, uint8_t value);
 uint8_t le_decode_byte(le_stream *s, le_model *model);
+
+// Dibit-delta encoding model, specialized in small delta, use a good predictor up-front to maximize compression
+//
+// Use dibit to encode delta. 
+//      (0, -1, 1)      use 2 bits
+//      (-2, +2, -3)    use 4 bits
+//      (+3, -4, +4)    use 6 bits
+//      (-5, +5, -6)    use 8 bits
+//      anything greater use 16 bits
 void le_encode_delta(le_stream *s, int8_t delta);
 int8_t le_decode_delta(le_stream *s);
 void le_model_save(le_stream *s, const le_model *model);

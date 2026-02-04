@@ -228,7 +228,7 @@ void le_encode_delta(le_stream *s, int8_t delta)
         }
 
         le_write_dibit(s, 3); // escape
-        zz -= 2;
+        zz -= 3;
     }
 
     le_write_byte(s, zigzag8_encode(delta));
@@ -237,17 +237,17 @@ void le_encode_delta(le_stream *s, int8_t delta)
 // ----------------------------------------------------------------------------------------------------------------------------
 int8_t le_decode_delta(le_stream *s)
 {
-    uint8_t accum = 0;
+    uint8_t base = 0;
 
     for(uint32_t i = 0; i < 4; i++)
     {
         uint8_t d = le_read_dibit(s);
 
         if(d < 3)
-            return zigzag8_decode(d + accum);
+            return zigzag8_decode(d + base);
 
         // escape
-        accum += 2;
+        base += 3;
     }
 
     // fallback

@@ -131,6 +131,34 @@ TEST no_compression(void)
     PASS();
 }
 
+TEST delta(void)
+{
+    uint8_t buffer[2048];
+
+    le_stream stream;
+    le_init(&stream, buffer, sizeof(buffer));
+
+    le_begin_encode(&stream);
+        le_encode_delta(&stream, -1);
+        ASSERT_EQ(0, stream.position);
+        le_encode_delta(&stream, -3);
+        ASSERT_EQ(0, stream.position);
+        le_encode_delta(&stream, 0);
+        ASSERT_EQ(1, stream.position);
+        le_encode_delta(&stream, 127);
+        ASSERT_EQ(3, stream.position);
+    le_end_encode(&stream);
+
+    le_begin_decode(&stream);
+        ASSERT_EQ(-1, le_decode_delta(&stream));
+        ASSERT_EQ(-3, le_decode_delta(&stream));
+        ASSERT_EQ(0, le_decode_delta(&stream));
+        ASSERT_EQ(127, le_decode_delta(&stream));
+    le_end_decode(&stream);
+
+    PASS();
+}
+
 
 GREATEST_MAIN_DEFS();
 
@@ -142,6 +170,7 @@ int main(void)
     RUN_TEST(stream_read);
     RUN_TEST(nibble14);
     RUN_TEST(no_compression);
+    RUN_TEST(delta);
 
     GREATEST_MAIN_END();
 }
