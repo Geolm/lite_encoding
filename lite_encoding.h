@@ -45,7 +45,9 @@ typedef struct le_stream
 
 static void le_init(le_stream *s, void* buffer, size_t size);
 static void le_begin_encode(le_stream* s);
-static size_t le_end_encode(le_stream *s);
+static size_t le_end_encode(le_stream* s);
+static void le_begin_decode(le_stream* s);
+static void le_end_decode(le_stream* s);
 
 
 static void le_write_byte(le_stream *s, uint8_t value);
@@ -88,14 +90,14 @@ static inline void le_init(le_stream *s, void* buffer, size_t size)
 
     s->buffer = (uint8_t*) buffer;
     s->size = size;
-    s->position = 0;
-    s->bit = 0;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_begin_encode(le_stream* s)
 {
-   memset(s->buffer, 0, s->size);
+    memset(s->buffer, 0, s->size);
+    s->position = 0;
+    s->bit = 0;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -109,6 +111,19 @@ static inline size_t le_end_encode(le_stream *s)
         final_size++;
 
     return final_size;
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_begin_decode(le_stream* s)
+{
+    s->position = 0;
+    s->bit = 0;
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_end_decode(le_stream* s)
+{
+    (void) s;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
