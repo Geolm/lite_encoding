@@ -1,2 +1,3 @@
-# nib
-High-performance nibble-based entropy codec
+# lite_encoding
+
+Reduced Alphabet Static Entropy Encoding (RASEE)
