@@ -188,3 +188,32 @@ uint8_t le_decode_byte(le_stream *s, le_model *model)
     return value;
 }
 
+// ----------------------------------------------------------------------------------------------------------------------------
+void le_model_save(le_stream *s, const le_model *model)
+{
+    le_write_dibit(s, model->no_compression ? 1 : 0);
+    if (!model->no_compression)
+    {
+        le_write_nibble(s, model->cold_num_bits);
+        le_write_byte(s, model->cold_min);
+
+        for(uint32_t i=0; i<MODEL_MAX_HOT; ++i)
+            le_write_byte(s, model->hot_values[i]);
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+void le_model_load(le_stream *s, le_model *model)
+{
+    model->no_compression = (le_read_dibit(s) == 1);
+    if (!model->no_compression)
+    {
+        model->cold_num_bits = le_read_nibble(s);
+        model->cold_min = le_read_byte(s);
+        model->last_value = 0;
+
+        for(uint32_t i=0; i<MODEL_MAX_HOT; ++i)
+            model->hot_values[i] = le_read_byte(s);
+    }
+}
+

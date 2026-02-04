@@ -68,21 +68,25 @@ TEST nibble14(void)
     le_model model;
     le_model_init(&model, histogram.count, histogram.num_symbols);
 
+    le_begin_encode(&stream);
+    le_model_save(&stream, &model);
+
     ASSERT_EQ(15, model.cold_min);
     ASSERT_EQ(19, model.cold_max);
     ASSERT_EQ(4, model.cold_num_bits);
 
-    le_begin_encode(&stream);
-
     for(uint32_t i=0; i<sizeof(sequence); ++i)
         le_encode_byte(&stream, &model, sequence[i]);
 
-    ASSERT_EQ(19, le_end_encode(&stream));
+    le_end_encode(&stream);
 
     le_begin_decode(&stream);
 
+    le_model new_model;
+    le_model_load(&stream, &new_model);
+
     for(uint32_t i=0; i<sizeof(sequence); ++i)
-        ASSERT_EQ(sequence[i], le_decode_byte(&stream, &model));
+        ASSERT_EQ(sequence[i], le_decode_byte(&stream, &new_model));
 
     le_end_decode(&stream);
 

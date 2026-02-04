@@ -40,7 +40,6 @@ enum le_mode
     le_mode_decode
 };
 
-
 typedef struct le_stream
 {
     uint8_t* buffer;
@@ -49,22 +48,6 @@ typedef struct le_stream
     size_t size;
     enum le_mode mode;
 } le_stream;
-
-
-static void le_init(le_stream *s, void* buffer, size_t size);
-static void le_begin_encode(le_stream* s);
-static size_t le_end_encode(le_stream* s);
-static void le_begin_decode(le_stream* s);
-static void le_end_decode(le_stream* s);
-
-
-static void le_write_byte(le_stream *s, uint8_t value);
-static void le_write_nibble(le_stream *s, uint8_t nibble);
-static void le_write_dibit(le_stream *s, uint8_t dibit);
-
-static uint8_t le_read_byte(le_stream *s);
-static uint8_t le_read_nibble(le_stream *s);
-static uint8_t le_read_dibit(le_stream *s);
 
 // Nibble-14 Encoding Model
 //
@@ -87,13 +70,6 @@ typedef struct le_model
     bool no_compression;
 } le_model;
 
-
-void le_model_init(le_model *model, const uint32_t *histogram, uint32_t num_symbols);
-void le_encode_byte(le_stream *s, le_model *model, uint8_t value);
-uint8_t le_decode_byte(le_stream *s, le_model *model);
-
-
-// histogram structure utility as nibble-14 is static
 #define LE_HISTOGRAM_SIZE (256)
 
 typedef struct le_histogram
@@ -101,6 +77,27 @@ typedef struct le_histogram
     uint32_t count[LE_HISTOGRAM_SIZE];
     uint32_t num_symbols;
 } le_histogram;
+
+static void le_init(le_stream *s, void* buffer, size_t size);
+static void le_begin_encode(le_stream* s);
+static size_t le_end_encode(le_stream* s);
+static void le_begin_decode(le_stream* s);
+static void le_end_decode(le_stream* s);
+
+
+static void le_write_byte(le_stream *s, uint8_t value);
+static void le_write_nibble(le_stream *s, uint8_t nibble);
+static void le_write_dibit(le_stream *s, uint8_t dibit);
+
+static uint8_t le_read_byte(le_stream *s);
+static uint8_t le_read_nibble(le_stream *s);
+static uint8_t le_read_dibit(le_stream *s);
+
+void le_model_init(le_model *model, const uint32_t *histogram, uint32_t num_symbols);
+void le_encode_byte(le_stream *s, le_model *model, uint8_t value);
+uint8_t le_decode_byte(le_stream *s, le_model *model);
+void le_model_save(le_stream *s, const le_model *model);
+void le_model_load(le_stream *s, le_model *model);
 
 static void histogram_init(le_histogram* h, uint32_t num_symbols);
 
