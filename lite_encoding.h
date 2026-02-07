@@ -434,17 +434,52 @@ static inline int8_t zigzag8_decode(uint8_t v)
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_encode_delta(le_stream *s, int8_t delta)
 {
-    // uint8_t zz = zigzag8_encode(delta);
+    uint8_t zz = zigzag8_encode(delta);
 
-    (void)s;
-    (void)delta;
+    // hardcoded k=2
+    if (zz < 20)
+    {
+        le_write_bits(s, 0, 1);
+        rice_encode(s, zz, 2);
+    }
+    else
+    {
+        le_write_bits(s, 1, 1);
+        le_write_byte(s, (uint8_t)delta);
+    }
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline int8_t le_decode_delta(le_stream* s)
 {
-    (void)s;
-    return 0;
+    if (s->bits_available < 16) le_refill(s);
+
+    uint32_t flag = (uint32_t)(s->bit_reservoir & 1U);
+    s->bit_reservoir >>= 1;
+    s->bits_available -= 1;
+
+    // escape
+    if (flag == 1)
+    {
+        uint8_t raw_val = (uint8_t)(s->bit_reservoir & 0xFFU);
+        s->bit_reservoir >>= 8;
+        s->bits_available -= 8;
+        return (int8_t)raw_val;
+    }
+
+    uint32_t q = 0;
+    while ((s->bit_reservoir & (1ULL << q)) != 0) 
+        q++;
+    
+    s->bit_reservoir >>= (q + 1);
+    s->bits_available -= (q + 1);
+
+    uint32_t r = (uint32_t)(s->bit_reservoir & 3U); // k=2, so mask 0b11
+    s->bit_reservoir >>= 2;
+    s->bits_available -= 2;
+
+    uint32_t zz = (q << 2) | r;
+    return zigzag8_decode((uint8_t)zz);
 }
 
 #endif
