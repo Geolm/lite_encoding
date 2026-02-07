@@ -33,6 +33,9 @@ freely, subject to the following restrictions:
 #include <string.h>
 #include <stdbool.h>
 
+#define LE_MODEL_MAX_HOT (48)
+#define LE_HISTOGRAM_SIZE (256)
+
 enum le_mode
 {
     le_mode_idle,
@@ -43,23 +46,22 @@ enum le_mode
 typedef struct le_stream
 {
     uint8_t* buffer;
-    uint8_t bit;
+    uint32_t bit_offset;
     size_t position;
     size_t size;
+
+    uint64_t bit_reservoir;
+    uint32_t bits_available;
+
     enum le_mode mode;
 } le_stream;
 
 typedef struct le_model
 {
-    uint8_t hot_values[14];
-    uint8_t last_value;
-    uint8_t cold_min;
-    uint8_t cold_max;
-    uint8_t cold_num_bits;
-    bool no_compression;
+    uint8_t hot_values[LE_MODEL_MAX_HOT];
+    uint8_t k;  // rice k-value
+    uint8_t num_hot_values;
 } le_model;
-
-#define LE_HISTOGRAM_SIZE (256)
 
 typedef struct le_histogram
 {
@@ -67,305 +69,315 @@ typedef struct le_histogram
     uint32_t num_symbols;
 } le_histogram;
 
-static void le_init(le_stream *s, void* buffer, size_t size);
-static void le_begin_encode(le_stream* s);
-static size_t le_end_encode(le_stream* s);
-static void le_begin_decode(le_stream* s);
-static void le_end_decode(le_stream* s);
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_refill(le_stream* s)
+{
+    // Pull bytes into the reservoir until it's full enough for any standard read
+    while (s->bits_available <= 56 && s->position < s->size)
+    {
+        s->bit_reservoir |= ((uint64_t)s->buffer[s->position]) << s->bits_available;
+        s->bits_available += 8;
+        s->position++;
+    }
+}
 
-static void le_write_byte(le_stream *s, uint8_t value);
-static void le_write_nibble(le_stream *s, uint8_t nibble);
-static void le_write_dibit(le_stream *s, uint8_t dibit);
-
-static uint8_t le_read_byte(le_stream *s);
-static uint8_t le_read_nibble(le_stream *s);
-static uint8_t le_read_dibit(le_stream *s);
-
-void le_model_init(le_model *model, const uint32_t *histogram, uint32_t num_symbols);
-
-// Nibble-14 Encoding Model
-//
-// The Nibble-14 model compresses data by focusing on the 14 most frequent byte values in the input:
-// The model stores the 14 hot values derived from the input histogram.
-// Each byte is encoded as a 4-bit nibble:
-//      0–13 → index into the hot values.
-//      14 → run-length code (RLE) for repeating the previous byte.
-//      15 → escape code, followed by the full byte if it doesn’t match the hot values or RLE.
-//
-// This approach efficiently compresses data with skewed distributions and repeated bytes while keeping the stream compact.
-
-void le_encode_byte(le_stream *s, le_model *model, uint8_t value);
-uint8_t le_decode_byte(le_stream *s, le_model *model);
-
-// Dibit-delta encoding model, specialized in small delta, use a good predictor up-front to maximize compression
-//
-// Use dibit to encode delta. 
-//      (0, -1, 1)      use 2 bits
-//      (-2, +2, -3)    use 4 bits
-//      (+3, -4, +4)    use 6 bits
-//      (-5, +5, -6)    use 8 bits
-//      anything greater use 16 bits
-void le_encode_delta(le_stream *s, int8_t delta);
-int8_t le_decode_delta(le_stream *s);
-void le_model_save(le_stream *s, const le_model *model);
-void le_model_load(le_stream *s, le_model *model);
-
-static void histogram_init(le_histogram* h, uint32_t num_symbols);
-
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_flush(le_stream* s)
+{
+    while (s->bits_available >= 8)
+    {
+#ifdef LE_CHECKS
+        assert(s->position < s->size);
+#endif
+        s->buffer[s->position] = (uint8_t)(s->bit_reservoir & 0xFF);
+        s->bit_reservoir >>= 8;
+        s->bits_available -= 8;
+        s->position++;
+    }
+}
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_init(le_stream *s, void* buffer, size_t size)
 {
+#ifdef LE_CHECKS
     assert(s != NULL);
     assert(buffer != NULL);
-
-    s->buffer = (uint8_t*) buffer;
+#endif
+    s->buffer = (uint8_t*)buffer;
     s->size = size;
+    s->position = 0;
+    s->bit_reservoir = 0;
+    s->bits_available = 0;
     s->mode = le_mode_idle;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_begin_encode(le_stream* s)
 {
-    assert(s->mode == le_mode_idle);
-    memset(s->buffer, 0, s->size);
-
     s->position = 0;
-    s->bit = 0;
+    s->bit_reservoir = 0;
+    s->bits_available = 0;
     s->mode = le_mode_encode;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline size_t le_end_encode(le_stream *s)
+static inline size_t le_end_encode(le_stream* s)
 {
-    assert(s->mode == le_mode_encode);
-
-    size_t final_size = s->position;
-
-    if (s->bit > 0)
-        final_size++;
+    while (s->bits_available > 0)
+    {
+        if (s->position < s->size)
+        {
+            s->buffer[s->position] = (uint8_t)(s->bit_reservoir & 0xFF);
+            s->bit_reservoir >>= 8;
+            s->position++;
+        }
+        
+        if (s->bits_available > 8)
+        {
+            s->bits_available -= 8;
+        }
+        else
+        {
+            s->bits_available = 0;
+        }
+    }
 
     s->mode = le_mode_idle;
-
-    return final_size;
+    return s->position;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_begin_decode(le_stream* s)
 {
-    assert(s->mode == le_mode_idle);
-
     s->position = 0;
-    s->bit = 0;
+    s->bit_reservoir = 0;
+    s->bits_available = 0;
     s->mode = le_mode_decode;
+    le_refill(s);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_end_decode(le_stream* s)
 {
-    assert(s->mode == le_mode_decode);
     s->mode = le_mode_idle;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline void le_write_nibble(le_stream *s, uint8_t nibble)
+static inline void le_write_bits(le_stream* s, uint8_t data, uint8_t num_bits)
 {
-    assert(s->mode == le_mode_encode);
-    assert(nibble <= 0x0F);
-    assert(s->position < s->size);
-
-    switch (s->bit)
-    {
-        case 0:
-        {
-            s->buffer[s->position] |= nibble << 4;
-            s->bit = 4;
-            break;
-        }
-
-        case 2:
-        {
-            s->buffer[s->position] |= nibble << 2;
-            s->bit = 6;
-            break;
-        }
-
-        case 4:
-        {
-            s->buffer[s->position] |= nibble;
-            s->bit = 0;
-            s->position++;
-            break;
-        }
-
-        case 6:
-        {
-            assert(s->position + 1 < s->size);
-
-            s->buffer[s->position]     |= nibble >> 2;
-            s->buffer[s->position + 1] |= nibble << 6;
-            s->bit = 2;
-            s->position++;
-            break;
-        }
-
-        default:
-            assert(0);
-    }
+    s->bit_reservoir |= (uint64_t)(data & ((1 << num_bits) - 1)) << s->bits_available;
+    s->bits_available += num_bits;
+    if (s->bits_available >= 32)
+        le_flush(s);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t le_read_nibble(le_stream *s)
+static inline void le_write_byte(le_stream* s, uint8_t value)
 {
-    assert(s->mode == le_mode_decode);
-    assert(s->position < s->size);
-
-    uint8_t nibble;
-
-    switch (s->bit)
-    {
-        case 0:
-        {
-            nibble = s->buffer[s->position] >> 4;
-            s->bit = 4;
-            break;
-        }
-
-        case 2:
-        {
-            nibble = (s->buffer[s->position] >> 2) & 0x0F;
-            s->bit = 6;
-            break;
-        }
-
-        case 4:
-        {
-            nibble = s->buffer[s->position] & 0x0F;
-            s->bit = 0;
-            s->position++;
-            break;
-        }
-
-        case 6:
-        {
-            assert(s->position + 1 < s->size);
-
-            uint8_t hi = (s->buffer[s->position] & 0x03) << 2;
-            uint8_t lo =  s->buffer[s->position + 1] >> 6;
-            nibble = hi | lo;
-
-            s->bit = 2;
-            s->position++;
-            break;
-        }
-
-        default:
-            assert(0);
-    }
-
-    return nibble;
-}
-
-// ----------------------------------------------------------------------------------------------------------------------------
-static inline void le_write_dibit(le_stream *s, uint8_t dibit)
-{
-    assert(s->mode == le_mode_encode);
-    assert(dibit <= 0x03);
-    assert(s->position < s->size);
-
-    uint8_t shift = 6 - s->bit;
-    s->buffer[s->position] |= (dibit << shift);
-    s->bit += 2;
-
-    if (s->bit == 8)
-    {
-        s->bit = 0;
-        s->position++;
-    }
-}
-
-// ----------------------------------------------------------------------------------------------------------------------------
-static inline void le_write_byte(le_stream *s, uint8_t value)
-{
-    assert(s->mode == le_mode_encode);
-    if (s->bit == 0) 
-    {
-        assert(s->position < s->size);
-        s->buffer[s->position++] = value;
-    } 
-    else 
-    {
-        // byte is split across two memory locations
-        assert(s->position + 1 < s->size);
-        
-        uint8_t shift = s->bit;
-        uint8_t remaining = 8 - shift;
-
-        s->buffer[s->position]     |= (value >> shift);
-        s->buffer[s->position + 1] |= (value << remaining);
-        s->position++;
-    }
-}
-
-// ----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t le_read_dibit(le_stream *s)
-{
-    assert(s->mode == le_mode_decode);
-    assert(s->position < s->size);
-
-    // Extract 2 bits based on the current bit offset (reading from MSB to LSB)
-    uint8_t shift = 6 - s->bit;
-    uint8_t dibit = (s->buffer[s->position] >> shift) & 0x03;
-
-    s->bit += 2;
-
-    if (s->bit == 8)
-    {
-        s->bit = 0;
-        s->position++;
-    }
-
-    return dibit;
-}
-
-// ----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t le_read_byte(le_stream *s)
-{
-    assert(s->mode == le_mode_decode);
-    uint8_t value = 0;
-
-    if (s->bit == 0)
-    {
-        // Aligned case
-        assert(s->position < s->size);
-        value = s->buffer[s->position++];
-    }
-    else
-    {
-        // Straddled case: value is split across s->buffer[pos] and s->buffer[pos+1]
-        assert(s->position + 1 < s->size);
-
-        uint8_t shift = s->bit;
-        uint8_t remaining = 8 - shift;
-
-        uint8_t hi = (s->buffer[s->position] << shift);
-        uint8_t lo = (s->buffer[s->position + 1] >> remaining);
-        
-        value = hi | lo;
-        s->position++;
-        // s->bit remains unchanged (e.g., if it was 4, it's still 4 in the next byte)
-    }
-
-    return value;
+    s->bit_reservoir |= ((uint64_t)value << s->bits_available);
+    s->bits_available += 8;
+    if (s->bits_available >= 32)
+        le_flush(s);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
 static inline void histogram_init(le_histogram* h, uint32_t num_symbols)
 {
+#ifdef LE_CHECKS
     assert(num_symbols > 3 && num_symbols <= 256);
+#endif
+
     h->num_symbols = num_symbols;
     for(uint32_t i=0; i<num_symbols; ++i)
         h->count[i] = 0;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+// calculates the best Rice parameter 'k' for a given distribution.
+uint32_t compute_best_k(const uint32_t *histogram, uint8_t *hot_values, uint32_t hot_used)
+{
+    uint32_t best_k = 0;
+    uint64_t min_total_bits = UINT64_MAX;
+
+    
+    for (uint32_t k = 0; k <= 4; k++)
+    {
+        uint64_t current_k_bits = 0;
+
+        for (uint32_t i = 0; i < UINT8_MAX; i++)
+        {
+            uint32_t count = histogram[i];
+            if (count == 0) 
+                continue;
+
+            uint32_t table_idx = UINT32_MAX;
+            for (uint32_t j = 0; j < hot_used; j++)
+            {
+                if (hot_values[j] == (uint8_t)i)
+                {
+                    table_idx = j;
+                    break;
+                }
+            }
+
+            if (table_idx == UINT32_MAX)
+            {
+                // not in hot table: 1 flag bit + 8 raw bits
+                current_k_bits += (uint64_t)count * 9;
+            }
+            else
+            {
+                // calculate Rice length + 1 flag bit
+                uint32_t q = table_idx >> k;
+                uint32_t rice_bits = (q + 1) + k;
+                uint32_t total_bits = 1 + rice_bits;
+
+                if (total_bits > 9)
+                    current_k_bits += (uint64_t)count * 9;
+                else
+                    current_k_bits += (uint64_t)count * total_bits;
+            }
+        }
+
+        if (current_k_bits < min_total_bits)
+        {
+            min_total_bits = current_k_bits;
+            best_k = k;
+        }
+    }
+
+    return best_k;
+}
+
+#define le_max(a, b) ((a > b) ? a : b)
+
+// ----------------------------------------------------------------------------------------------------------------------------
+void clamp_num_hot_values(le_model* model)
+{
+    switch(model->k)
+    {
+    case 0 : model->num_hot_values = le_max(model->num_hot_values, 7); break;
+    case 1 : model->num_hot_values = le_max(model->num_hot_values, 12); break;
+    case 2 : model->num_hot_values = le_max(model->num_hot_values, 20); break;
+    case 3 : model->num_hot_values = le_max(model->num_hot_values, 32); break;
+    case 4 : model->num_hot_values = le_max(model->num_hot_values, 48); break;
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+void le_model_init(le_model *model, const uint32_t *histogram)
+{
+    memset(model->hot_values, 0, sizeof(model->hot_values));
+
+    uint32_t selected[LE_MODEL_MAX_HOT];
+    for (uint32_t i = 0; i < LE_MODEL_MAX_HOT; i++)
+        selected[i] = UINT32_MAX;
+
+    model->num_hot_values = 0;
+    for (uint32_t i = 0; i < LE_MODEL_MAX_HOT; i++)
+    {
+        uint32_t max_count = 0;
+        uint32_t max_index = UINT32_MAX;
+
+        for (uint32_t s = 0; s < UINT8_MAX; s++)
+        {
+            bool already = false;
+            for (uint32_t j = 0; j < i; j++)
+            {
+                if (selected[j] == s) 
+                { 
+                    already = true; 
+                    break; 
+                }
+            }
+
+            if (already) 
+                continue;
+
+            if (histogram[s] > max_count)
+            {
+                max_count = histogram[s];
+                max_index = s;
+            }
+        }
+
+        if (max_index == UINT32_MAX || max_count == 0)
+            break;
+
+        model->hot_values[i] = (uint8_t)max_index;
+        selected[i] = max_index;
+        model->num_hot_values++;
+    }
+
+    model->k = compute_best_k(histogram, model->hot_values, model->num_hot_values);
+    clamp_num_hot_values(model);
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_encode(le_stream *s, le_model *model, uint8_t value)
+{
+#ifdef LE_CHECKS
+    assert(s->mode == le_mode_encode);
+#endif
+
+
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline uint8_t le_decode(le_stream *restrict s, const le_model *restrict model) 
+{
+    if (s->bits_available < 16)
+        le_refill(s);
+
+    // uint32_t entry = model->decode_table[s->bit_reservoir & 0x3FF];
+    // uint32_t length = entry >> 8;
+    // uint8_t  value  = (uint8_t)entry;
+
+    // // 4. Consume the bits used
+    // s->bit_reservoir >>= length;
+    // s->bits_available -= length;
+
+    return value;
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_model_save(le_stream *s, const le_model *model)
+{
+    for(uint32_t i=0; i<LE_MODEL_MAX_HOT; ++i)
+        le_write_byte(s, model->hot_values[i]);
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_model_load(le_stream *s, le_model *model)
+{
+    for(uint32_t i=0; i<LE_MODEL_MAX_HOT; ++i)
+        model->hot_values[i] = le_read_byte(s);
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline uint8_t zigzag8_encode(int8_t v)
+{
+    return (uint8_t)((v << 1) ^ (v >> 7));
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline int8_t zigzag8_decode(uint8_t v)
+{
+    return (int8_t)((v >> 1) ^ -(int8_t)(v & 1));
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_encode_delta(le_stream *s, int8_t delta)
+{
+    uint8_t zz = zigzag8_encode(delta);
+
+    
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline int8_t le_decode_delta(le_stream* s)
+{
+    
 }
 
 #endif

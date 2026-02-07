@@ -16,7 +16,6 @@ endif()
 
 add_executable(test
     ./test/test.c
-    ./lite_encoding.c
 )
 
 if(UNIX AND NOT APPLE)
