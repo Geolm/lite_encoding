@@ -35,6 +35,7 @@ freely, subject to the following restrictions:
 
 #define LE_MODEL_MAX_HOT (48)
 #define LE_HISTOGRAM_SIZE (256)
+#define le_min(a, b) ((a < b) ? a : b)
 
 enum le_mode
 {
@@ -180,6 +181,18 @@ static inline void le_write_byte(le_stream* s, uint8_t value)
         le_flush(s);
 }
 
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline uint8_t le_read_byte(le_stream* s)
+{
+    if (s->bits_available < 8)
+        le_refill(s);
+
+    uint8_t value = (uint8_t)(s->bit_reservoir & 0xFF);
+    s->bit_reservoir >>= 8;
+    s->bits_available -= 8;
+    return value;
+}
+
 //----------------------------------------------------------------------------------------------------------------------------
 static inline void histogram_init(le_histogram* h, uint32_t num_symbols)
 {
@@ -204,7 +217,7 @@ uint32_t compute_best_k(const uint32_t *histogram, uint8_t *hot_values, uint32_t
     {
         uint64_t current_k_bits = 0;
 
-        for (uint32_t i = 0; i < UINT8_MAX; i++)
+        for (uint32_t i = 0; i < UINT8_MAX+1; i++)
         {
             uint32_t count = histogram[i];
             if (count == 0) 
@@ -249,21 +262,6 @@ uint32_t compute_best_k(const uint32_t *histogram, uint8_t *hot_values, uint32_t
     return best_k;
 }
 
-#define le_max(a, b) ((a > b) ? a : b)
-
-// ----------------------------------------------------------------------------------------------------------------------------
-void clamp_num_hot_values(le_model* model)
-{
-    switch(model->k)
-    {
-    case 0 : model->num_hot_values = le_max(model->num_hot_values, 7); break;
-    case 1 : model->num_hot_values = le_max(model->num_hot_values, 12); break;
-    case 2 : model->num_hot_values = le_max(model->num_hot_values, 20); break;
-    case 3 : model->num_hot_values = le_max(model->num_hot_values, 32); break;
-    case 4 : model->num_hot_values = le_max(model->num_hot_values, 48); break;
-    }
-}
-
 // ----------------------------------------------------------------------------------------------------------------------------
 void le_model_init(le_model *model, const uint32_t *histogram)
 {
@@ -279,7 +277,7 @@ void le_model_init(le_model *model, const uint32_t *histogram)
         uint32_t max_count = 0;
         uint32_t max_index = UINT32_MAX;
 
-        for (uint32_t s = 0; s < UINT8_MAX; s++)
+        for (uint32_t s = 0; s < UINT8_MAX+1; s++)
         {
             bool already = false;
             for (uint32_t j = 0; j < i; j++)
@@ -310,7 +308,29 @@ void le_model_init(le_model *model, const uint32_t *histogram)
     }
 
     model->k = compute_best_k(histogram, model->hot_values, model->num_hot_values);
-    clamp_num_hot_values(model);
+
+    switch(model->k)
+    {
+    case 0 : model->num_hot_values = le_min(model->num_hot_values, 7); break;
+    case 1 : model->num_hot_values = le_min(model->num_hot_values, 12); break;
+    case 2 : model->num_hot_values = le_min(model->num_hot_values, 20); break;
+    case 3 : model->num_hot_values = le_min(model->num_hot_values, 32); break;
+    case 4 : model->num_hot_values = le_min(model->num_hot_values, 48); break;
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void rice_encode(le_stream *s, uint32_t value, uint8_t k) 
+{
+    uint32_t q = value >> k;
+    uint32_t r = value & ((1U << k) - 1U);
+
+    // unary
+    if (q > 0) le_write_bits(s, (uint8_t)((1U << q) - 1U), (uint8_t)q);
+    le_write_bits(s, 0, 1);
+
+    // remainder
+    if (k > 0) le_write_bits(s, (uint8_t)r, k);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -320,7 +340,18 @@ static inline void le_encode(le_stream *s, le_model *model, uint8_t value)
     assert(s->mode == le_mode_encode);
 #endif
 
+    for(uint32_t i=0; i<model->num_hot_values; ++i)
+    {
+        if (value == model->hot_values[i])
+        {
+            le_write_bits(s, 0, 1);
+            rice_encode(s, i, model->k);
+            return;
+        }
+    }
 
+    le_write_bits(s, 1, 1);
+    le_write_byte(s, value);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -329,28 +360,62 @@ static inline uint8_t le_decode(le_stream *restrict s, const le_model *restrict 
     if (s->bits_available < 16)
         le_refill(s);
 
-    // uint32_t entry = model->decode_table[s->bit_reservoir & 0x3FF];
-    // uint32_t length = entry >> 8;
-    // uint8_t  value  = (uint8_t)entry;
+    // escape flag
+    uint32_t flag = (uint32_t)(s->bit_reservoir & 1U);
+    s->bit_reservoir >>= 1;
+    s->bits_available -= 1;
 
-    // // 4. Consume the bits used
-    // s->bit_reservoir >>= length;
-    // s->bits_available -= length;
+    if (flag == 1)
+    {
+        uint32_t raw_val = (uint32_t)(s->bit_reservoir & 0xFFU);
+        s->bit_reservoir >>= 8;
+        s->bits_available -= 8;
+        return (uint8_t)raw_val;
+    }
 
-    return value;
+    // rice decoding
+    uint32_t q = 0;
+    while ((s->bit_reservoir & (1ULL << q)) != 0)
+        q++;
+
+    // unary
+    s->bit_reservoir >>= (q + 1);
+    s->bits_available -= (q + 1);
+
+    // remainder
+    uint32_t r = 0;
+    uint32_t k = model->k;
+    if (k > 0)
+    {
+        r = (uint32_t)(s->bit_reservoir & ((1ULL << k) - 1U));
+        s->bit_reservoir >>= k;
+        s->bits_available -= k;
+    }
+
+    uint32_t index = (q << k) | r;
+
+#ifdef LE_CHEKCS
+    assert(index < model->num_hot_values);
+#endif
+    return model->hot_values[index];
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_model_save(le_stream *s, const le_model *model)
 {
-    for(uint32_t i=0; i<LE_MODEL_MAX_HOT; ++i)
+    le_write_byte(s, model->k);
+    le_write_byte(s, model->num_hot_values);
+    for(uint32_t i=0; i<model->num_hot_values; ++i)
         le_write_byte(s, model->hot_values[i]);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_model_load(le_stream *s, le_model *model)
 {
-    for(uint32_t i=0; i<LE_MODEL_MAX_HOT; ++i)
+    model->k = le_read_byte(s);
+    model->num_hot_values = le_read_byte(s);
+
+    for(uint32_t i=0; i<model->num_hot_values; ++i)
         model->hot_values[i] = le_read_byte(s);
 }
 
@@ -369,15 +434,17 @@ static inline int8_t zigzag8_decode(uint8_t v)
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_encode_delta(le_stream *s, int8_t delta)
 {
-    uint8_t zz = zigzag8_encode(delta);
+    // uint8_t zz = zigzag8_encode(delta);
 
-    
+    (void)s;
+    (void)delta;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline int8_t le_decode_delta(le_stream* s)
 {
-    
+    (void)s;
+    return 0;
 }
 
 #endif
