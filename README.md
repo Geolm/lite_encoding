@@ -1,6 +1,6 @@
 # Lite Encoding Library
 
-A header-only, high-performance adaptive entropy coding library written in C99.
+A header-only, adaptive entropy coding library written in C99.
 
 ## Overview
 
