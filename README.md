@@ -34,7 +34,8 @@ $k$ only increments or decrements when the trend exceeds `LE_K_TREND_THRESHOLD` 
 
 #include "lite_encoding.h"
 
-void compress_data(uint8_t* src, uint8_t* dst, size_t size) {
+size_t compress_data(uint8_t* src, uint8_t* dst, size_t size)
+{
     le_stream s;
     le_model m;
 
@@ -45,7 +46,7 @@ void compress_data(uint8_t* src, uint8_t* dst, size_t size) {
     for(size_t i = 0; i < size; ++i) {
         le_encode_symbol(&s, &m, src[i]);
     }
-    le_end_encode(&s);
+    return le_end_encode(&s);
 }
 
 ````
