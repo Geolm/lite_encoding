@@ -11,31 +11,23 @@ TEST codec(void)
 
     const uint8_t sequence[] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,1,2,3,4,5,6,7,8,9,10,11,12,13,14};
 
-    le_histogram histogram;
-    histogram_init(&histogram, 256);
-
-    for(uint32_t i=0; i<sizeof(sequence); ++i)
-        histogram.count[sequence[i]]++;
-
     le_model model;
-    le_model_init(&model, histogram.count);
+    le_model_init(&model);
 
     le_begin_encode(&stream);
-    le_model_save(&stream, &model);
 
     for(uint32_t i=0; i<sizeof(sequence); ++i)
-        le_encode(&stream, &model, sequence[i]);
+        le_encode_symbol(&stream, &model, sequence[i]);
 
-    printf("model stats\n\tk=%u\n\tnum_hot_values=%u\n", model.k, model.num_hot_values);
-    printf("compressed size : %zu vs original size : %zu\n", le_end_encode(&stream) - 2 - model.num_hot_values, sizeof(sequence));
+    printf("compressed size : %zu vs original size : %zu\n", le_end_encode(&stream), sizeof(sequence));
 
     le_begin_decode(&stream);
 
     le_model new_model;
-    le_model_load(&stream, &new_model);
+    le_model_init(&new_model);
 
     for(uint32_t i=0; i<sizeof(sequence); ++i)
-        ASSERT_EQ(sequence[i], le_decode(&stream, &new_model));
+        ASSERT_EQ(sequence[i], le_decode_symbol(&stream, &new_model));
 
     le_end_decode(&stream);
 
@@ -50,18 +42,24 @@ TEST delta(void)
     le_stream stream;
     le_init(&stream, buffer, sizeof(buffer));
 
+    le_model model;
+    le_model_init(&model);
+
     le_begin_encode(&stream);
-        le_encode_delta(&stream, -1);
-        le_encode_delta(&stream, -3);
-        le_encode_delta(&stream, 0);
-        le_encode_delta(&stream, 127);
+        le_encode_delta(&stream, &model, -1);
+        le_encode_delta(&stream, &model, -3);
+        le_encode_delta(&stream, &model, 0);
+        le_encode_delta(&stream, &model, 10);
     printf("compressed size : %zu vs original size : %u\n", le_end_encode(&stream), 4U);
 
+    le_model new_model;
+    le_model_init(&new_model);
+
     le_begin_decode(&stream);
-        ASSERT_EQ(-1, le_decode_delta(&stream));
-        ASSERT_EQ(-3, le_decode_delta(&stream));
-        ASSERT_EQ(0, le_decode_delta(&stream));
-        ASSERT_EQ(127, le_decode_delta(&stream));
+        ASSERT_EQ(-1, le_decode_delta(&stream, &new_model));
+        ASSERT_EQ(-3, le_decode_delta(&stream, &new_model));
+        ASSERT_EQ(0, le_decode_delta(&stream, &new_model));
+        ASSERT_EQ(127, le_decode_delta(&stream, &new_model));
     le_end_decode(&stream);
 
     PASS();

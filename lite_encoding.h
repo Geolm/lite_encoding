@@ -20,8 +20,38 @@ freely, subject to the following restrictions:
    misrepresented as being the original software.
 3. This notice may not be removed or altered from any source distribution.
 
-
 */
+
+
+
+
+/*
+
+Lite Encoding Library
+
+A high-performance, adaptive entropy coding library designed for 
+real-time compression tasks (e.g., texture transcoding, delta signaling).
+
+  - Backend: Adaptive Rice-Golomb Coder
+        Maps integers to variable-length bitstrings. The 'k' parameter 
+        adapts dynamically via a "soft-trend" mechanism to track changes 
+        in data magnitude without oscillating.
+ 
+  - Frontend: MTF (Move-To-Front) Alphabet
+        Maps 8-bit symbols to Rice indices. Uses a low-pass filter (index/2) 
+        during promotion to prevent high-frequency jitter in the alphabet 
+        ranking, ensuring stability in textures with localized noise.
+
+  - Bitstream: 64-bit Reservoir
+        Provides fast bit-level I/O by buffering data into a 64-bit word, 
+        reducing the frequency of byte-level memory access.
+
+USAGE:
+ - Use le_encode_symbol() for data with categorical redundancy (repeated patterns).
+ - Use le_encode_delta() for **small** numerical gradients or offsets.
+ - Use le_encode_literal() for small numbers
+
+ */
 
 
 #ifndef LITE_ENCODING_H
@@ -33,9 +63,8 @@ freely, subject to the following restrictions:
 #include <string.h>
 #include <stdbool.h>
 
-#define LE_MODEL_MAX_HOT (48)
-#define LE_HISTOGRAM_SIZE (256)
-#define le_min(a, b) ((a < b) ? a : b)
+#define LE_ALPHABET_SIZE (256)
+#define LE_K_TREND_THRESHOLD (12)
 
 enum le_mode
 {
@@ -59,16 +88,10 @@ typedef struct le_stream
 
 typedef struct le_model
 {
-    uint8_t hot_values[LE_MODEL_MAX_HOT];
+    uint8_t alphabet[LE_ALPHABET_SIZE];
     uint8_t k;  // rice k-value
-    uint8_t num_hot_values;
+    int8_t k_trend;
 } le_model;
-
-typedef struct le_histogram
-{
-    uint32_t count[LE_HISTOGRAM_SIZE];
-    uint32_t num_symbols;
-} le_histogram;
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_refill(le_stream* s)
@@ -173,6 +196,18 @@ static inline void le_write_bits(le_stream* s, uint8_t data, uint8_t num_bits)
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
+static inline uint8_t le_read_bits(le_stream* s, uint8_t num_bits)
+{
+    if (s->bits_available < num_bits)
+        le_refill(s);
+
+    uint8_t value = (uint8_t)(s->bit_reservoir & ((1U<<num_bits)-1U));
+    s->bit_reservoir >>= num_bits;
+    s->bits_available -= num_bits;
+    return value;
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_write_byte(le_stream* s, uint8_t value)
 {
     s->bit_reservoir |= ((uint64_t)value << s->bits_available);
@@ -193,130 +228,14 @@ static inline uint8_t le_read_byte(le_stream* s)
     return value;
 }
 
-//----------------------------------------------------------------------------------------------------------------------------
-static inline void histogram_init(le_histogram* h, uint32_t num_symbols)
-{
-#ifdef LE_CHECKS
-    assert(num_symbols > 3 && num_symbols <= 256);
-#endif
-
-    h->num_symbols = num_symbols;
-    for(uint32_t i=0; i<num_symbols; ++i)
-        h->count[i] = 0;
-}
-
-//----------------------------------------------------------------------------------------------------------------------------
-// calculates the best Rice parameter 'k' for a given distribution.
-uint32_t compute_best_k(const uint32_t *histogram, uint8_t *hot_values, uint32_t hot_used)
-{
-    uint32_t best_k = 0;
-    uint64_t min_total_bits = UINT64_MAX;
-
-    
-    for (uint32_t k = 0; k <= 4; k++)
-    {
-        uint64_t current_k_bits = 0;
-
-        for (uint32_t i = 0; i < UINT8_MAX+1; i++)
-        {
-            uint32_t count = histogram[i];
-            if (count == 0) 
-                continue;
-
-            uint32_t table_idx = UINT32_MAX;
-            for (uint32_t j = 0; j < hot_used; j++)
-            {
-                if (hot_values[j] == (uint8_t)i)
-                {
-                    table_idx = j;
-                    break;
-                }
-            }
-
-            if (table_idx == UINT32_MAX)
-            {
-                // not in hot table: 1 flag bit + 8 raw bits
-                current_k_bits += (uint64_t)count * 9;
-            }
-            else
-            {
-                // calculate Rice length + 1 flag bit
-                uint32_t q = table_idx >> k;
-                uint32_t rice_bits = (q + 1) + k;
-                uint32_t total_bits = 1 + rice_bits;
-
-                if (total_bits > 9)
-                    current_k_bits += (uint64_t)count * 9;
-                else
-                    current_k_bits += (uint64_t)count * total_bits;
-            }
-        }
-
-        if (current_k_bits < min_total_bits)
-        {
-            min_total_bits = current_k_bits;
-            best_k = k;
-        }
-    }
-
-    return best_k;
-}
 
 // ----------------------------------------------------------------------------------------------------------------------------
-void le_model_init(le_model *model, const uint32_t *histogram)
+void le_model_init(le_model *model)
 {
-    memset(model->hot_values, 0, sizeof(model->hot_values));
-
-    uint32_t selected[LE_MODEL_MAX_HOT];
-    for (uint32_t i = 0; i < LE_MODEL_MAX_HOT; i++)
-        selected[i] = UINT32_MAX;
-
-    model->num_hot_values = 0;
-    for (uint32_t i = 0; i < LE_MODEL_MAX_HOT; i++)
-    {
-        uint32_t max_count = 0;
-        uint32_t max_index = UINT32_MAX;
-
-        for (uint32_t s = 0; s < UINT8_MAX+1; s++)
-        {
-            bool already = false;
-            for (uint32_t j = 0; j < i; j++)
-            {
-                if (selected[j] == s) 
-                { 
-                    already = true; 
-                    break; 
-                }
-            }
-
-            if (already) 
-                continue;
-
-            if (histogram[s] > max_count)
-            {
-                max_count = histogram[s];
-                max_index = s;
-            }
-        }
-
-        if (max_index == UINT32_MAX || max_count == 0)
-            break;
-
-        model->hot_values[i] = (uint8_t)max_index;
-        selected[i] = max_index;
-        model->num_hot_values++;
-    }
-
-    model->k = compute_best_k(histogram, model->hot_values, model->num_hot_values);
-
-    switch(model->k)
-    {
-    case 0 : model->num_hot_values = le_min(model->num_hot_values, 7); break;
-    case 1 : model->num_hot_values = le_min(model->num_hot_values, 12); break;
-    case 2 : model->num_hot_values = le_min(model->num_hot_values, 20); break;
-    case 3 : model->num_hot_values = le_min(model->num_hot_values, 32); break;
-    case 4 : model->num_hot_values = le_min(model->num_hot_values, 48); break;
-    }
+    for(uint32_t i=0; i<LE_ALPHABET_SIZE; ++i)
+        model->alphabet[i] = i;
+    model->k = 2;
+    model->k_trend = 0;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -325,98 +244,130 @@ static inline void rice_encode(le_stream *s, uint32_t value, uint8_t k)
     uint32_t q = value >> k;
     uint32_t r = value & ((1U << k) - 1U);
 
-    // unary
-    if (q > 0) le_write_bits(s, (uint8_t)((1U << q) - 1U), (uint8_t)q);
+    // write q
+    for (uint32_t i = 0; i < q; ++i)
+        le_write_bits(s, 1, 1);
+    
+    // terminator '0'
     le_write_bits(s, 0, 1);
 
     // remainder
-    if (k > 0) le_write_bits(s, (uint8_t)r, k);
+    if (k > 0) 
+        le_write_bits(s, (uint8_t)r, k);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline void le_encode(le_stream *s, le_model *model, uint8_t value)
+static inline void le_model_update(le_model* model, uint8_t value)
+{
+    if (value < (1U << model->k) && model->k > 0) 
+        model->k_trend--;
+    else if (value > (3U << model->k) && model->k < 6) 
+        model->k_trend++;
+
+    // soft adaptation
+    if (model->k_trend > LE_K_TREND_THRESHOLD)
+    {
+        model->k++;
+        model->k_trend = 0;
+    }
+    else if (model->k_trend < -LE_K_TREND_THRESHOLD)
+    {
+        model->k--;
+        model->k_trend = 0;
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_encode_symbol(le_stream *s, le_model *model, uint8_t value)
 {
 #ifdef LE_CHECKS
     assert(s->mode == le_mode_encode);
 #endif
 
-    for(uint32_t i=0; i<model->num_hot_values; ++i)
+    uint32_t index = 0;
+    for (; index < 256; index++)
+        if (model->alphabet[index] == value)
+            break;
+
+    rice_encode(s, index, model->k);
+
+    // move up this value in the alphabet
+    if (index > 0) 
     {
-        if (value == model->hot_values[i])
+        uint8_t temp = model->alphabet[index];
+        uint32_t target_index = index / 2;  // lowpass filter, prevent jittering
+
+        for (uint32_t i = index; i > target_index; i--)
+            model->alphabet[i] = model->alphabet[i - 1];
+        
+        model->alphabet[target_index] = temp;
+    }
+
+    le_model_update(model, index);
+}
+
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline uint8_t rice_decode(le_stream *s, uint8_t k) 
+{
+        uint32_t q = 0;
+    while (true) 
+    {
+        if (s->bits_available == 0) 
+            le_refill(s);
+        
+        if ((s->bit_reservoir & 1ULL) != 0) 
         {
-            le_write_bits(s, 0, 1);
-            rice_encode(s, i, model->k);
-            return;
+            q++;
+            s->bit_reservoir >>= 1;
+            s->bits_available--;
+        } else 
+        {
+            s->bit_reservoir >>= 1; 
+            s->bits_available--;
+            break;
         }
     }
 
-    le_write_bits(s, 1, 1);
-    le_write_byte(s, value);
-}
-
-// ----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t le_decode(le_stream *restrict s, const le_model *restrict model) 
-{
-    if (s->bits_available < 16)
+    if (s->bits_available < k)
         le_refill(s);
-
-    // escape flag
-    uint32_t flag = (uint32_t)(s->bit_reservoir & 1U);
-    s->bit_reservoir >>= 1;
-    s->bits_available -= 1;
-
-    if (flag == 1)
-    {
-        uint32_t raw_val = (uint32_t)(s->bit_reservoir & 0xFFU);
-        s->bit_reservoir >>= 8;
-        s->bits_available -= 8;
-        return (uint8_t)raw_val;
-    }
-
-    // rice decoding
-    uint32_t q = 0;
-    while ((s->bit_reservoir & (1ULL << q)) != 0)
-        q++;
-
-    // unary
-    s->bit_reservoir >>= (q + 1);
-    s->bits_available -= (q + 1);
-
-    // remainder
+    
     uint32_t r = 0;
-    uint32_t k = model->k;
-    if (k > 0)
+    if (k > 0) 
     {
         r = (uint32_t)(s->bit_reservoir & ((1ULL << k) - 1U));
         s->bit_reservoir >>= k;
         s->bits_available -= k;
     }
 
-    uint32_t index = (q << k) | r;
+    return (uint8_t) ((q << k) | r);
+}
 
-#ifdef LE_CHEKCS
-    assert(index < model->num_hot_values);
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline uint8_t le_decode_symbol(le_stream *restrict s, le_model *restrict model) 
+{
+#ifdef LE_CHECKS
+    assert(index < LE_ALPHABET_SIZE);
 #endif
-    return model->hot_values[index];
-}
 
-// ----------------------------------------------------------------------------------------------------------------------------
-static inline void le_model_save(le_stream *s, const le_model *model)
-{
-    le_write_byte(s, model->k);
-    le_write_byte(s, model->num_hot_values);
-    for(uint32_t i=0; i<model->num_hot_values; ++i)
-        le_write_byte(s, model->hot_values[i]);
-}
+    uint8_t index = rice_decode(s, model->k);
+    uint8_t value = model->alphabet[index];
 
-// ----------------------------------------------------------------------------------------------------------------------------
-static inline void le_model_load(le_stream *s, le_model *model)
-{
-    model->k = le_read_byte(s);
-    model->num_hot_values = le_read_byte(s);
+     // move up this value in the alphabet
+    if (index > 0) 
+    {
+        uint8_t temp = model->alphabet[index];
+        uint32_t target_index = index / 2;  // lowpass filter, prevent jittering
 
-    for(uint32_t i=0; i<model->num_hot_values; ++i)
-        model->hot_values[i] = le_read_byte(s);
+        for (uint32_t i = index; i > target_index; i--)
+            model->alphabet[i] = model->alphabet[i - 1];
+        
+        model->alphabet[target_index] = temp;
+    }
+
+    le_model_update(model, index);
+
+    return value;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -432,54 +383,34 @@ static inline int8_t zigzag8_decode(uint8_t v)
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline void le_encode_delta(le_stream *s, int8_t delta)
+static inline void le_encode_literal(le_stream *s, le_model* model, uint8_t value)
 {
-    uint8_t zz = zigzag8_encode(delta);
-
-    // hardcoded k=2
-    if (zz < 20)
-    {
-        le_write_bits(s, 0, 1);
-        rice_encode(s, zz, 2);
-    }
-    else
-    {
-        le_write_bits(s, 1, 1);
-        le_write_byte(s, (uint8_t)delta);
-    }
+    rice_encode(s, value, model->k);
+    le_model_update(model, value);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline int8_t le_decode_delta(le_stream* s)
+static inline uint8_t le_decode_literal(le_stream* s, le_model* model)
 {
-    if (s->bits_available < 16) le_refill(s);
+    uint8_t value = rice_decode(s, model->k);
+    le_model_update(model, value);
+    return value;
+}
 
-    uint32_t flag = (uint32_t)(s->bit_reservoir & 1U);
-    s->bit_reservoir >>= 1;
-    s->bits_available -= 1;
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_encode_delta(le_stream *s, le_model* model, int8_t delta)
+{
+    uint8_t zz = zigzag8_encode(delta);
+    rice_encode(s, zz, model->k);
+    le_model_update(model, zz);
+}
 
-    // escape
-    if (flag == 1)
-    {
-        uint8_t raw_val = (uint8_t)(s->bit_reservoir & 0xFFU);
-        s->bit_reservoir >>= 8;
-        s->bits_available -= 8;
-        return (int8_t)raw_val;
-    }
-
-    uint32_t q = 0;
-    while ((s->bit_reservoir & (1ULL << q)) != 0) 
-        q++;
-    
-    s->bit_reservoir >>= (q + 1);
-    s->bits_available -= (q + 1);
-
-    uint32_t r = (uint32_t)(s->bit_reservoir & 3U); // k=2, so mask 0b11
-    s->bit_reservoir >>= 2;
-    s->bits_available -= 2;
-
-    uint32_t zz = (q << 2) | r;
-    return zigzag8_decode((uint8_t)zz);
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline int8_t le_decode_delta(le_stream* s, le_model* model)
+{
+    uint8_t zz = rice_decode(s, model->k);
+    le_model_update(model, zz);
+    return zigzag8_decode(zz);
 }
 
 #endif
