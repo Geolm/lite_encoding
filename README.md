@@ -43,9 +43,9 @@ size_t compress_data(uint8_t* src, uint8_t* dst, size_t size)
     le_model_init(&m);
     
     le_begin_encode(&s);
-    for(size_t i = 0; i < size; ++i) {
+    for(size_t i = 0; i < size; ++i)
         le_encode_symbol(&s, &m, src[i]);
-    }
+
     return le_end_encode(&s);
 }
 
