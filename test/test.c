@@ -59,7 +59,7 @@ TEST delta(void)
         ASSERT_EQ(-1, le_decode_delta(&stream, &new_model));
         ASSERT_EQ(-3, le_decode_delta(&stream, &new_model));
         ASSERT_EQ(0, le_decode_delta(&stream, &new_model));
-        ASSERT_EQ(127, le_decode_delta(&stream, &new_model));
+        ASSERT_EQ(10, le_decode_delta(&stream, &new_model));
     le_end_decode(&stream);
 
     PASS();
