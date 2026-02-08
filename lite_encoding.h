@@ -310,8 +310,8 @@ static inline void le_encode_symbol(le_stream *s, le_model *model, uint8_t value
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline uint8_t rice_decode(le_stream *s, uint8_t k) 
 {
-        uint32_t q = 0;
-    while (true) 
+    uint32_t q = 0;
+    while (1) 
     {
         if (s->bits_available == 0) 
             le_refill(s);
