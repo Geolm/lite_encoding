@@ -42,6 +42,9 @@ real-time compression tasks (e.g., texture transcoding, delta signaling).
         during promotion to prevent high-frequency jitter in the alphabet 
         ranking, ensuring stability in textures with localized noise.
 
+  - Soft K adaptation
+        Updates k after LE_K_TREND_THRESHOLD consecutive change signals.
+
   - Bitstream: 64-bit Reservoir
         Provides fast bit-level I/O by buffering data into a 64-bit word, 
         reducing the frequency of byte-level memory access.
@@ -272,47 +275,31 @@ static inline void rice_encode(le_stream *s, uint32_t value, uint8_t k)
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline uint8_t rice_decode(le_stream *s, uint8_t k) 
 {
-    uint32_t q = 0;
+    if (s->bits_available < 32) 
+        le_refill(s);
+
+    uint32_t q = __builtin_ctzll(~s->bit_reservoir);
     uint32_t q_limit = q_escape_for_k[k];
 
-    while (true) 
+    if (q >= q_limit)
     {
-        if (s->bits_available == 0) 
-            le_refill(s);
-        
-        if ((s->bit_reservoir & 1ULL) != 0) 
-        {
-            q++;
-            s->bit_reservoir >>= 1;
-            s->bits_available--;
-        } 
-        else 
-        {
-            s->bit_reservoir >>= 1; 
-            s->bits_available--;
-            break;
-        }
-    }
-
-    if (q == q_limit)
+        s->bit_reservoir >>= (q_limit + 1);
+        s->bits_available -= (q_limit + 1);
         return le_read_byte(s);
-
-    if (s->bits_available < k)
-        le_refill(s);
-    
-    uint32_t r = 0;
-    if (k > 0) 
-    {
-        r = (uint32_t)(s->bit_reservoir & ((1ULL << k) - 1U));
-        s->bit_reservoir >>= k;
-        s->bits_available -= k;
     }
 
-    return (uint8_t) ((q << k) | r);
+    uint32_t total_bits = q + 1 + k;
+    uint32_t val = s->bit_reservoir;
+    
+    s->bit_reservoir >>= total_bits;
+    s->bits_available -= total_bits;
+
+    uint32_t r = (val >> (q + 1)) & ((1U << k) - 1);
+    return (uint8_t)((q << k) | r);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline void le_model_update(le_model* model, uint8_t value)
+static inline void le_model_update_k(le_model* model, uint8_t value)
 {
     if (value < (1U << model->k) && model->k > 0) 
         model->k_trend--;
@@ -347,18 +334,15 @@ static inline void le_encode_symbol(le_stream *s, le_model *model, uint8_t value
     rice_encode(s, index, model->k);
 
     // move up this value in the alphabet
-    if (index > 0) 
+    if (index > 0 && model->k < 6)
     {
         uint8_t temp = model->alphabet[index];
-        uint32_t target_index = index / 2;  // lowpass filter, prevent jittering
-
-        for (uint32_t i = index; i > target_index; i--)
-            model->alphabet[i] = model->alphabet[i - 1];
-        
+        uint32_t target_index = index / 2;
+        memmove(&model->alphabet[target_index+1], &model->alphabet[target_index], (index - target_index));
         model->alphabet[target_index] = temp;
     }
 
-    le_model_update(model, index);
+    le_model_update_k(model, index);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -371,19 +355,15 @@ static inline uint8_t le_decode_symbol(le_stream *restrict s, le_model *restrict
     uint8_t index = rice_decode(s, model->k);
     uint8_t value = model->alphabet[index];
 
-     // move up this value in the alphabet
-    if (index > 0) 
+    if (index > 0 && model->k < 6)
     {
         uint8_t temp = model->alphabet[index];
-        uint32_t target_index = index / 2;  // lowpass filter, prevent jittering
-
-        for (uint32_t i = index; i > target_index; i--)
-            model->alphabet[i] = model->alphabet[i - 1];
-        
+        uint32_t target_index = index / 2;
+        memmove(&model->alphabet[target_index+1], &model->alphabet[target_index], (index - target_index));
         model->alphabet[target_index] = temp;
     }
 
-    le_model_update(model, index);
+    le_model_update_k(model, index);
 
     return value;
 }
