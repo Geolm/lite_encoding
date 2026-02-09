@@ -51,7 +51,7 @@ real-time compression tasks (e.g., texture transcoding, delta signaling).
 
 USAGE:
  - Use le_encode_symbol() for data with categorical redundancy (repeated patterns).
- - Use le_encode_delta() for **small** numerical gradients or offsets.
+ - Use le_encode_delta() for small numerical offset or delta.
  - Use le_encode_literal() for small numbers
 
  */
@@ -69,6 +69,9 @@ USAGE:
 #define LE_ALPHABET_SIZE (256)
 #define LE_K_TREND_THRESHOLD (12)
 #define LE_Q_ESCAPE_SIZE (10)
+
+// uncomment this to add asserts
+//#define LE_CHECKS
 
 static const uint8_t q_escape_for_k[LE_Q_ESCAPE_SIZE] = {16, 10, 4, 6, 255, 255, 255, 255, 255, 255};
 
@@ -278,7 +281,7 @@ static inline uint8_t rice_decode(le_stream *s, uint8_t k)
     if (s->bits_available < 32) 
         le_refill(s);
 
-    uint32_t q = __builtin_ctzll(~s->bit_reservoir);
+    uint32_t q = __builtin_ctzll(~s->bit_reservoir | (1ULL << 63));
     uint32_t q_limit = q_escape_for_k[k];
 
     if (q >= q_limit)
@@ -349,7 +352,7 @@ static inline void le_encode_symbol(le_stream *s, le_model *model, uint8_t value
 static inline uint8_t le_decode_symbol(le_stream *restrict s, le_model *restrict model) 
 {
 #ifdef LE_CHECKS
-    assert(index < LE_ALPHABET_SIZE);
+    assert(s->mode == le_mode_decode);
 #endif
 
     uint8_t index = rice_decode(s, model->k);
