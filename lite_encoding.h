@@ -384,14 +384,14 @@ static inline int8_t zigzag8_decode(uint8_t v)
 static inline void le_encode_literal(le_stream *s, le_model* model, uint8_t value)
 {
     rice_encode(s, value, model->k);
-    le_model_update(model, value);
+    le_model_update_k(model, value);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline uint8_t le_decode_literal(le_stream* s, le_model* model)
 {
     uint8_t value = rice_decode(s, model->k);
-    le_model_update(model, value);
+    le_model_update_k(model, value);
     return value;
 }
 
@@ -400,14 +400,14 @@ static inline void le_encode_delta(le_stream *s, le_model* model, int8_t delta)
 {
     uint8_t zz = zigzag8_encode(delta);
     rice_encode(s, zz, model->k);
-    le_model_update(model, zz);
+    le_model_update_k(model, zz);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline int8_t le_decode_delta(le_stream* s, le_model* model)
 {
     uint8_t zz = rice_decode(s, model->k);
-    le_model_update(model, zz);
+    le_model_update_k(model, zz);
     return zigzag8_decode(zz);
 }
 
