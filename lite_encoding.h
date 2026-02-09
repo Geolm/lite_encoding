@@ -23,8 +23,6 @@ freely, subject to the following restrictions:
 */
 
 
-
-
 /*
 
 Lite Encoding Library
@@ -53,6 +51,8 @@ USAGE:
  - Use le_encode_symbol() for data with categorical redundancy (repeated patterns).
  - Use le_encode_delta() for small numerical offset or delta.
  - Use le_encode_literal() for small numbers
+ - Use le_encode_rle() if your stream has repetitive value from the last 8 values.
+ - You can create/use as many model as you want, it's better to specialize model on specific data
 
  */
 
@@ -69,6 +69,7 @@ USAGE:
 #define LE_ALPHABET_SIZE (256)
 #define LE_K_TREND_THRESHOLD (12)
 #define LE_Q_ESCAPE_SIZE (10)
+#define LE_HISTORY_SIZE (16)
 
 // uncomment this to add asserts
 //#define LE_CHECKS
@@ -98,6 +99,8 @@ typedef struct le_stream
 typedef struct le_model
 {
     uint8_t alphabet[LE_ALPHABET_SIZE];
+    uint8_t history[LE_HISTORY_SIZE];
+    uint8_t history_index;
     uint8_t k;  // rice k-value
     int8_t k_trend;
 } le_model;
@@ -243,8 +246,13 @@ void le_model_init(le_model *model)
 {
     for(uint32_t i=0; i<LE_ALPHABET_SIZE; ++i)
         model->alphabet[i] = i;
+
+    for(uint32_t i=0; i<LE_HISTORY_SIZE; ++i)
+        model->history[i] = i;
+
     model->k = 2;
     model->k_trend = 0;
+    model->history_index = 0;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -412,6 +420,66 @@ static inline int8_t le_decode_delta(le_stream* s, le_model* model)
     uint8_t zz = rice_decode(s, model->k);
     le_model_update_k(model, zz);
     return zigzag8_decode(zz);
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_encode_rle(le_stream* s, le_model* model, uint8_t value)
+{
+    uint32_t index = UINT32_MAX;
+    for(uint32_t i=0; i<LE_HISTORY_SIZE; ++i)
+    {
+        if (value == model->history[i])
+        {
+            index = i;
+            break;
+        }
+    }
+
+    if (index != UINT32_MAX)
+    {
+        le_write_bits(s, 1, 1);
+        rice_encode(s, index, model->k);
+        le_model_update_k(model, index);
+    }
+    else
+    {
+        le_write_bits(s, 0, 1);
+        le_write_byte(s, value);
+
+        model->history[model->history_index] = value;
+        model->history_index = (model->history_index + 1)&(LE_HISTORY_SIZE-1);
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline uint8_t le_decode_rle(le_stream* s, le_model* model)
+{
+    if (s->bits_available < 24) 
+        le_refill(s);
+
+    if (s->bit_reservoir & 1) 
+    {
+        s->bit_reservoir >>= 1;
+        s->bits_available--;
+
+        uint32_t index = rice_decode(s, model->k);
+        uint8_t value = model->history[index];
+        le_model_update_k(model, index);
+
+        return value;
+    }
+    else 
+    {
+        uint8_t value = (uint8_t)((s->bit_reservoir >> 1) & 0xFF);
+        
+        s->bit_reservoir >>= 9;
+        s->bits_available -= 9;
+
+        model->history[model->history_index] = value;
+        model->history_index = (model->history_index + 1) & (LE_HISTORY_SIZE-1);
+
+        return value;
+    }
 }
 
 #endif

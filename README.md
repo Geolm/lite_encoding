@@ -28,6 +28,10 @@ $k$ only increments or decrements when the trend exceeds `LE_K_TREND_THRESHOLD` 
 | le_encode_delta | Encodes signed differences using ZigZag + Rice. Best for small delta |
 
 
+Maximize efficiency through specialization: use **multiple** model instances to track different data streams. One model per data type ensures the history remains relevant and the compression stays tight.  
+
+
+
 ## Example
 
 ````C
