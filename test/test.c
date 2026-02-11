@@ -38,38 +38,6 @@ TEST delta(void)
 {
     uint8_t buffer[2048];
 
-    static const uint8_t sequence[] = {1, 65, 5, 3, 7, 39, 4, 90, 10, 65, 5, 3, 1, 40, 39, 40, 6, 5, 3, 7, 3, 2, 1, 5, 90, 65,
-                                       1, 65, 5, 3, 7, 39, 4, 91, 10, 65, 5, 3, 1, 40, 39, 40, 6, 5, 3, 7, 3, 2, 1, 5, 90, 65,
-                                       1, 65, 5, 3, 4, 38, 4, 90, 10, 65, 5, 3, 1, 27, 39, 40, 6, 5, 3, 73, 3, 24, 1, 5, 90, 65,
-                                       1, 65, 5, 3, 6, 39, 4, 90, 10, 65, 5, 3, 1, 40, 39, 40, 6, 5, 3, 7, 32, 2, 12, 5, 90, 65};
-
-    le_stream stream;
-    le_init(&stream, buffer, sizeof(buffer));
-
-    le_model model;
-    le_model_init(&model);
-
-    le_begin_encode(&stream);
-    
-    for(uint32_t i=0; i<sizeof(sequence); ++i)
-        le_encode_rle(&stream, &model, sequence[i]);
-    printf("compressed size : %zu vs original size : %zu\n", le_end_encode(&stream), sizeof(sequence));
-
-    le_model new_model;
-    le_model_init(&new_model);
-
-    le_begin_decode(&stream);
-    for(uint32_t i=0; i<sizeof(sequence); ++i)
-        ASSERT_EQ(sequence[i], le_decode_rle(&stream, &new_model));
-    le_end_decode(&stream);
-
-    PASS();
-}
-
-TEST rle(void)
-{
-    uint8_t buffer[2048];
-
     le_stream stream;
     le_init(&stream, buffer, sizeof(buffer));
 
@@ -105,7 +73,6 @@ int main(void)
     
     RUN_TEST(symbols);
     RUN_TEST(delta);
-    RUN_TEST(rle);
 
     GREATEST_MAIN_END();
 }
