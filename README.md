@@ -22,11 +22,12 @@ $k$ only increments or decrements when the trend exceeds `LE_K_TREND_THRESHOLD` 
 
 | Function | Usage |
 |------:|------:|
-| le_init     | Initializes the stream with a memory buffer.    |
 | le_encode_symbol     | Encodes 8-bit data using the MTF alphabet. Best for repetitive patterns.    |
 | le_encode_literal     | Encodes raw values directly via Rice coding. Best for small numbers. |
 | le_encode_delta | Encodes signed differences using ZigZag + Rice. Best for small delta |
 
+
+Of course equivalent decoding functions are available : le_decode_symbol, le_decode_literal, le_decode_delta.  
 
 Maximize efficiency through specialization: use **multiple** model instances to track different data streams. One model per data type ensures the history remains relevant and the compression stays tight.  
 
