@@ -52,7 +52,7 @@ USAGE:
  - Use le_encode_delta() for small numerical offset or delta.
  - Use le_encode_literal() for small numbers
  - You can create/use as many model as you want, it's better to specialize model on specific data
-
+ - Test the status of the stream after encoding and decoding to catch errors
  */
 
 
@@ -61,7 +61,6 @@ USAGE:
 
 #include <stdint.h>
 #include <stddef.h>
-#include <assert.h>
 #include <string.h>
 #include <stdbool.h>
 
@@ -70,10 +69,13 @@ USAGE:
 #define LE_Q_ESCAPE_SIZE (10)
 #define LE_HISTORY_SIZE (16)
 
-// uncomment this to add asserts
-//#define LE_CHECKS
-
 static const uint8_t q_escape_for_k[LE_Q_ESCAPE_SIZE] = {16, 10, 4, 6, 255, 255, 255, 255, 255, 255};
+
+typedef enum le_status
+{
+    LE_OK = 0,
+    LE_BUFFER_OVERRUN = -1
+} le_status;
 
 enum le_mode
 {
@@ -93,6 +95,7 @@ typedef struct le_stream
     uint32_t bits_available;
 
     enum le_mode mode;
+    le_status status;
 } le_stream;
 
 typedef struct le_model
@@ -105,7 +108,7 @@ typedef struct le_model
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_refill(le_stream* s)
 {
-    // Pull bytes into the reservoir until it's full enough for any standard read
+    // pull bytes into the reservoir until it's full enough for any standard read
     while (s->bits_available <= 56 && s->position < s->size)
     {
         s->bit_reservoir |= ((uint64_t)s->buffer[s->position]) << s->bits_available;
@@ -119,9 +122,11 @@ static inline void le_flush(le_stream* s)
 {
     while (s->bits_available >= 8)
     {
-#ifdef LE_CHECKS
-        assert(s->position < s->size);
-#endif
+        if (s->position >= s->size)
+        {
+            s->status = LE_BUFFER_OVERRUN;
+            return;
+        }
         s->buffer[s->position] = (uint8_t)(s->bit_reservoir & 0xFF);
         s->bit_reservoir >>= 8;
         s->bits_available -= 8;
@@ -132,16 +137,13 @@ static inline void le_flush(le_stream* s)
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_init(le_stream *s, void* buffer, size_t size)
 {
-#ifdef LE_CHECKS
-    assert(s != NULL);
-    assert(buffer != NULL);
-#endif
     s->buffer = (uint8_t*)buffer;
     s->size = size;
     s->position = 0;
     s->bit_reservoir = 0;
     s->bits_available = 0;
     s->mode = le_mode_idle;
+    s->status = LE_OK;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -151,28 +153,32 @@ static inline void le_begin_encode(le_stream* s)
     s->bit_reservoir = 0;
     s->bits_available = 0;
     s->mode = le_mode_encode;
+    s->status = LE_OK;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline size_t le_end_encode(le_stream* s)
 {
+    if (s->status != LE_OK) 
+        return 0;
+
+    size_t bytes_to_write = (s->bits_available + 7) / 8;
+    if (s->position + bytes_to_write > s->size)
+    {
+        s->status = LE_BUFFER_OVERRUN;
+        return 0;
+    }
+
     while (s->bits_available > 0)
     {
-        if (s->position < s->size)
-        {
-            s->buffer[s->position] = (uint8_t)(s->bit_reservoir & 0xFF);
-            s->bit_reservoir >>= 8;
-            s->position++;
-        }
+        s->buffer[s->position] = (uint8_t)(s->bit_reservoir & 0xFF);
+        s->bit_reservoir >>= 8;
+        s->position++;
         
         if (s->bits_available > 8)
-        {
             s->bits_available -= 8;
-        }
         else
-        {
             s->bits_available = 0;
-        }
     }
 
     s->mode = le_mode_idle;
@@ -186,6 +192,7 @@ static inline void le_begin_decode(le_stream* s)
     s->bit_reservoir = 0;
     s->bits_available = 0;
     s->mode = le_mode_decode;
+    s->status = LE_OK;
     le_refill(s);
 }
 
@@ -208,9 +215,16 @@ static inline void le_write_bits(le_stream* s, uint8_t data, uint8_t num_bits)
 static inline uint8_t le_read_bits(le_stream* s, uint8_t num_bits)
 {
     if (s->bits_available < num_bits)
+    {
         le_refill(s);
+        if (s->bits_available < num_bits) 
+        {
+            s->status = LE_BUFFER_OVERRUN;
+            return 0; 
+        }
+    }
 
-    uint8_t value = (uint8_t)(s->bit_reservoir & ((1U<<num_bits)-1U));
+    uint8_t value = (uint8_t)(s->bit_reservoir & ((1U << num_bits) - 1U));
     s->bit_reservoir >>= num_bits;
     s->bits_available -= num_bits;
     return value;
@@ -230,6 +244,12 @@ static inline uint8_t le_read_byte(le_stream* s)
 {
     if (s->bits_available < 8)
         le_refill(s);
+
+    if (s->bits_available < 8) 
+    {
+        s->status = LE_BUFFER_OVERRUN;
+        return 0; 
+    }
 
     uint8_t value = (uint8_t)(s->bit_reservoir & 0xFF);
     s->bit_reservoir >>= 8;
@@ -251,10 +271,6 @@ void le_model_init(le_model *model)
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void rice_encode(le_stream *s, uint32_t value, uint8_t k) 
 {
-#ifdef LE_CHECKS
-    assert(k < LE_Q_ESCAPE_SIZE);
-#endif
-
     uint32_t q = value >> k;
     uint32_t q_limit = q_escape_for_k[k];
     uint32_t r = value & ((1U << k) - 1U);
@@ -287,12 +303,23 @@ static inline uint8_t rice_decode(le_stream *s, uint8_t k)
 
     if (q >= q_limit)
     {
+        if (s->bits_available < (q_limit + 1)) 
+        {
+            s->status = LE_BUFFER_OVERRUN;
+            return 0;
+        }
         s->bit_reservoir >>= (q_limit + 1);
         s->bits_available -= (q_limit + 1);
         return le_read_byte(s);
     }
 
     uint32_t total_bits = q + 1 + k;
+    if (s->bits_available < total_bits) 
+    {
+        s->status = LE_BUFFER_OVERRUN;
+        return 0;
+    }
+
     uint32_t val = s->bit_reservoir;
     
     s->bit_reservoir >>= total_bits;
@@ -326,10 +353,6 @@ static inline void le_model_update_k(le_model* model, uint8_t value)
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_encode_symbol(le_stream *s, le_model *model, uint8_t value)
 {
-#ifdef LE_CHECKS
-    assert(s->mode == le_mode_encode);
-#endif
-
     uint32_t index = 0;
     for (; index < 256; index++)
         if (model->alphabet[index] == value)
@@ -352,10 +375,6 @@ static inline void le_encode_symbol(le_stream *s, le_model *model, uint8_t value
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline uint8_t le_decode_symbol(le_stream *restrict s, le_model *restrict model) 
 {
-#ifdef LE_CHECKS
-    assert(s->mode == le_mode_decode);
-#endif
-
     uint8_t index = rice_decode(s, model->k);
     uint8_t value = model->alphabet[index];
 

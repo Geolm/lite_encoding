@@ -64,6 +64,40 @@ TEST delta(void)
     PASS();
 }
 
+TEST overrun(void)
+{
+    uint8_t buffer[245];
+
+    le_stream stream;
+    le_init(&stream, buffer, sizeof(buffer));
+
+    le_model model;
+    le_model_init(&model);
+
+    le_begin_encode(&stream);
+
+    for(uint32_t i=0; i<default_font_atlas_size; ++i)
+        le_encode_symbol(&stream, &model, default_font_atlas[i]);
+
+    ASSERT_NEQ(stream.status, LE_OK);
+    ASSERT_EQ(le_end_encode(&stream), 0);
+
+    le_begin_decode(&stream);
+
+    le_model new_model;
+    le_model_init(&new_model);
+
+    for(uint32_t i=0; i<default_font_atlas_size; ++i)
+        le_decode_symbol(&stream, &new_model);
+
+    ASSERT_NEQ(stream.status, LE_OK);
+
+    le_end_decode(&stream);
+
+
+    PASS();
+}
+
 
 GREATEST_MAIN_DEFS();
 
@@ -73,6 +107,7 @@ int main(void)
     
     RUN_TEST(symbols);
     RUN_TEST(delta);
+    RUN_TEST(overrun);
 
     GREATEST_MAIN_END();
 }
