@@ -68,6 +68,18 @@ USAGE:
 #define LE_K_TREND_THRESHOLD (12)
 #define LE_Q_ESCAPE_SIZE (10)
 #define LE_HISTORY_SIZE (16)
+#ifdef _MSC_VER
+    #include <intrin.h>
+    #pragma intrinsic(_BitScanForward64)
+    static inline uint32_t le_ctz64(uint64_t mask)
+    {
+        unsigned long index;
+        _BitScanForward64(&index, mask);
+        return (uint32_t)index;
+    }
+#else
+    #define le_ctz64(mask) (uint32_t)__builtin_ctzll(mask)
+#endif
 
 static const uint8_t q_escape_for_k[LE_Q_ESCAPE_SIZE] = {16, 10, 4, 6, 255, 255, 255, 255, 255, 255};
 
@@ -298,7 +310,7 @@ static inline uint8_t rice_decode(le_stream *s, uint8_t k)
     if (s->bits_available < 32) 
         le_refill(s);
 
-    uint32_t q = __builtin_ctzll(~s->bit_reservoir | (1ULL << 63));
+    uint32_t q = le_ctz64(~s->bit_reservoir | (1ULL << 63));
     uint32_t q_limit = q_escape_for_k[k];
 
     if (q >= q_limit)
