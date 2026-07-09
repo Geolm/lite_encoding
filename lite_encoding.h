@@ -113,6 +113,7 @@ typedef struct le_stream
 typedef struct le_model
 {
     uint8_t alphabet[LE_ALPHABET_SIZE];
+    uint8_t index[LE_ALPHABET_SIZE];
     uint8_t k;  // rice k-value
     int8_t k_trend;
 } le_model;
@@ -215,9 +216,9 @@ static inline void le_end_decode(le_stream* s)
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline void le_write_bits(le_stream* s, uint8_t data, uint8_t num_bits)
+static inline void le_write_bits(le_stream* s, uint64_t data, uint8_t num_bits)
 {
-    s->bit_reservoir |= (uint64_t)(data & ((1 << num_bits) - 1)) << s->bits_available;
+    s->bit_reservoir |= (data & ((1ULL << num_bits) - 1ULL)) << s->bits_available;
     s->bits_available += num_bits;
     if (s->bits_available >= 32)
         le_flush(s);
@@ -274,7 +275,10 @@ static inline uint8_t le_read_byte(le_stream* s)
 void le_model_init(le_model *model)
 {
     for(uint32_t i=0; i<LE_ALPHABET_SIZE; ++i)
+    {
         model->alphabet[i] = i;
+        model->index[i] = i;
+    }
 
     model->k = 2;
     model->k_trend = 0;
@@ -290,12 +294,8 @@ static inline void rice_encode(le_stream *s, uint32_t value, uint8_t k)
     // checks if raw value is cheaper
     q = (q >= q_limit) ? q_limit : q;
 
-    // write q
-    for (uint32_t i = 0; i < q; ++i)
-        le_write_bits(s, 1, 1);
-    
-    // terminator '0'
-    le_write_bits(s, 0, 1);
+    // unary prefix: q ones followed by a zero
+    le_write_bits(s, (1ULL << q) - 1ULL, (uint8_t)(q + 1));
 
     // remainder or rawbyte
     if (q == q_limit)
@@ -363,25 +363,33 @@ static inline void le_model_update_k(le_model* model, uint8_t value)
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline void le_encode_symbol(le_stream *s, le_model *model, uint8_t value)
+static inline void le_model_promote(le_model* model, uint32_t index)
 {
-    uint32_t index = 0;
-    for (; index < 256; index++)
-        if (model->alphabet[index] == value)
-            break;
+    if (index == 0 || model->k >= 6)
+        return;
 
-    rice_encode(s, index, model->k);
+    uint32_t target = index / 2;
+    uint8_t value = model->alphabet[index];
 
-    // move up this value in the alphabet
-    if (index > 0 && model->k < 6)
+    for (uint32_t i = index; i > target; --i)
     {
-        uint8_t temp = model->alphabet[index];
-        uint32_t target_index = index / 2;
-        memmove(&model->alphabet[target_index+1], &model->alphabet[target_index], (index - target_index));
-        model->alphabet[target_index] = temp;
+        uint8_t v = model->alphabet[i - 1];
+        model->alphabet[i] = v;
+        model->index[v] = (uint8_t)i;
     }
 
-    le_model_update_k(model, index);
+    model->alphabet[target] = value;
+    model->index[value] = (uint8_t)target;
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_encode_symbol(le_stream *s, le_model *model, uint8_t value)
+{
+    uint32_t index = model->index[value];
+
+    rice_encode(s, index, model->k);
+    le_model_promote(model, index);
+    le_model_update_k(model, (uint8_t)index);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -390,14 +398,7 @@ static inline uint8_t le_decode_symbol(le_stream *restrict s, le_model *restrict
     uint8_t index = rice_decode(s, model->k);
     uint8_t value = model->alphabet[index];
 
-    if (index > 0 && model->k < 6)
-    {
-        uint8_t temp = model->alphabet[index];
-        uint32_t target_index = index / 2;
-        memmove(&model->alphabet[target_index+1], &model->alphabet[target_index], (index - target_index));
-        model->alphabet[target_index] = temp;
-    }
-
+    le_model_promote(model, index);
     le_model_update_k(model, index);
 
     return value;
