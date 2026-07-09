@@ -67,7 +67,6 @@ USAGE:
 #define LE_ALPHABET_SIZE (256)
 #define LE_K_TREND_THRESHOLD (12)
 #define LE_Q_ESCAPE_SIZE (10)
-#define LE_HISTORY_SIZE (16)
 #ifdef _MSC_VER
     #include <intrin.h>
     #pragma intrinsic(_BitScanForward64)
@@ -99,7 +98,6 @@ enum le_mode
 typedef struct le_stream
 {
     uint8_t* buffer;
-    uint32_t bit_offset;
     size_t position;
     size_t size;
 
