@@ -45,7 +45,7 @@ size_t compress_data(uint8_t* src, uint8_t* dst, size_t size)
     le_model m;
 
     le_init(&s, dst, size);
-    le_model_init(&m);
+    le_dynamic_model_init(&m);
     
     le_begin_encode(&s);
     for(size_t i = 0; i < size; ++i)

@@ -63,8 +63,9 @@ USAGE:
 #include <stddef.h>
 #include <string.h>
 #include <stdbool.h>
+#include <assert.h>
 
-#define LE_ALPHABET_SIZE (256)
+#define LE_ALPHABET_SIZE (256U)
 #define LE_K_TREND_THRESHOLD (12)
 #define LE_Q_ESCAPE_SIZE (10)
 #ifdef _MSC_VER
@@ -114,6 +115,7 @@ typedef struct le_model
     uint8_t index[LE_ALPHABET_SIZE];
     uint8_t k;  // rice k-value
     int8_t k_trend;
+    bool is_static;
 } le_model;
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -270,7 +272,7 @@ static inline uint8_t le_read_byte(le_stream* s)
 
 
 // ----------------------------------------------------------------------------------------------------------------------------
-void le_model_init(le_model *model)
+static inline void le_dynamic_model_init(le_model *model)
 {
     for(uint32_t i=0; i<LE_ALPHABET_SIZE; ++i)
     {
@@ -280,6 +282,89 @@ void le_model_init(le_model *model)
 
     model->k = 2;
     model->k_trend = 0;
+    model->is_static = false;
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_static_model_init(le_model *model, const uint32_t* histogram, uint32_t num_symbols)
+{
+    assert(num_symbols && num_symbols <= LE_ALPHABET_SIZE);
+
+    typedef struct 
+    {
+        uint8_t symbol;
+        uint32_t count;
+    } le_sym_freq;
+
+    le_sym_freq freq_table[LE_ALPHABET_SIZE];
+    for (uint32_t i = 0; i < LE_ALPHABET_SIZE; ++i)
+    {
+        freq_table[i].symbol = (uint8_t)i;
+        freq_table[i].count = (i < num_symbols && histogram) ? histogram[i] : 0;
+    }
+
+    for (uint32_t i = 1; i < LE_ALPHABET_SIZE; ++i)
+    {
+        le_sym_freq key = freq_table[i];
+        int32_t j = (int32_t)i - 1;
+
+        while (j >= 0 && (freq_table[j].count < key.count || 
+              (freq_table[j].count == key.count && freq_table[j].symbol > key.symbol)))
+        {
+            freq_table[j + 1] = freq_table[j];
+            j--;
+        }
+        freq_table[j + 1] = key;
+    }
+
+    for (uint32_t i = 0; i < LE_ALPHABET_SIZE; ++i)
+    {
+        uint8_t sym = freq_table[i].symbol;
+        model->alphabet[i] = sym;
+        model->index[sym] = (uint8_t)i;
+    }
+
+    uint8_t best_k = 2;
+    uint64_t min_total_bits = UINT64_MAX;
+
+    for (uint8_t candidate_k = 0; candidate_k < 8; ++candidate_k)
+    {
+        uint64_t total_bits = 0;
+        uint32_t q_limit = q_escape_for_k[candidate_k];
+
+        for (uint32_t index = 0; index < LE_ALPHABET_SIZE; ++index)
+        {
+            uint8_t count = freq_table[index].count;
+            if (count == 0) continue;
+
+            uint32_t q = index >> candidate_k;
+            uint32_t bits = (q >= q_limit) ? (q_limit + 1 + 8) : (q + 1 + candidate_k);
+
+            total_bits += (uint64_t)count * bits;
+        }
+
+        if (total_bits < min_total_bits)
+        {
+            min_total_bits = total_bits;
+            best_k = candidate_k;
+        }
+    }
+
+    model->k = best_k;
+    model->k_trend = 0;
+    model->is_static = true;
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_static_model_load(le_model *model, const uint8_t* alphabet, uint8_t num_symbols, uint8_t k)
+{
+    *model = (le_model) {0};
+    memcpy(model->alphabet, alphabet, num_symbols);
+    model->is_static = true;
+    model->k = k;
+
+    for (uint32_t i = 0; i < LE_ALPHABET_SIZE; ++i)
+        model->index[model->alphabet[i]] = (uint8_t)i;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -386,7 +471,8 @@ static inline void le_encode_symbol(le_stream *s, le_model *model, uint8_t value
     uint32_t index = model->index[value];
 
     rice_encode(s, index, model->k);
-    le_model_promote(model, index);
+    if (!model->is_static)
+        le_model_promote(model, index);
     le_model_update_k(model, (uint8_t)index);
 }
 
@@ -396,7 +482,8 @@ static inline uint8_t le_decode_symbol(le_stream *restrict s, le_model *restrict
     uint8_t index = rice_decode(s, model->k);
     uint8_t value = model->alphabet[index];
 
-    le_model_promote(model, index);
+    if (!model->is_static)
+        le_model_promote(model, index);
     le_model_update_k(model, index);
 
     return value;

@@ -11,7 +11,7 @@ TEST symbols(void)
     le_init(&stream, buffer, sizeof(buffer));
 
     le_model model;
-    le_model_init(&model);
+    le_dynamic_model_init(&model);
 
     le_begin_encode(&stream);
 
@@ -23,13 +23,50 @@ TEST symbols(void)
     le_begin_decode(&stream);
 
     le_model new_model;
-    le_model_init(&new_model);
+    le_dynamic_model_init(&new_model);
 
     for(uint32_t i=0; i<default_font_atlas_size; ++i)
         ASSERT_EQ(default_font_atlas[i], le_decode_symbol(&stream, &new_model));
 
     le_end_decode(&stream);
 
+
+    PASS();
+}
+
+TEST symbols_static(void)
+{
+    uint8_t buffer[32768];
+
+    le_stream stream;
+    le_init(&stream, buffer, sizeof(buffer));
+
+    uint32_t histogram[LE_ALPHABET_SIZE] = {0};
+    for (size_t i = 0; i < default_font_atlas_size; ++i)
+    {
+        histogram[default_font_atlas[i]]++;
+    }
+
+    le_model model;
+    le_static_model_init(&model, histogram, LE_ALPHABET_SIZE);
+
+    // 3. Encode symbols
+    le_begin_encode(&stream);
+
+    for (uint32_t i = 0; i < default_font_atlas_size; ++i)
+        le_encode_symbol(&stream, &model, default_font_atlas[i]);
+
+    printf("compressed size (static) : %zu vs original size : %zu\n", le_end_encode(&stream), default_font_atlas_size);
+
+    le_begin_decode(&stream);
+
+    le_model new_model;
+    le_static_model_init(&new_model, histogram, LE_ALPHABET_SIZE);
+
+    for (uint32_t i = 0; i < default_font_atlas_size; ++i)
+        ASSERT_EQ(default_font_atlas[i], le_decode_symbol(&stream, &new_model));
+
+    le_end_decode(&stream);
 
     PASS();
 }
@@ -42,7 +79,7 @@ TEST delta(void)
     le_init(&stream, buffer, sizeof(buffer));
 
     le_model model;
-    le_model_init(&model);
+    le_dynamic_model_init(&model);
 
     le_begin_encode(&stream);
         le_encode_delta(&stream, &model, -1);
@@ -52,7 +89,7 @@ TEST delta(void)
     printf("compressed size : %zu vs original size : %u\n", le_end_encode(&stream), 4U);
 
     le_model new_model;
-    le_model_init(&new_model);
+    le_dynamic_model_init(&new_model);
 
     le_begin_decode(&stream);
         ASSERT_EQ(-1, le_decode_delta(&stream, &new_model));
@@ -72,7 +109,7 @@ TEST overrun(void)
     le_init(&stream, buffer, sizeof(buffer));
 
     le_model model;
-    le_model_init(&model);
+    le_dynamic_model_init(&model);
 
     le_begin_encode(&stream);
 
@@ -85,7 +122,7 @@ TEST overrun(void)
     le_begin_decode(&stream);
 
     le_model new_model;
-    le_model_init(&new_model);
+    le_dynamic_model_init(&new_model);
 
     for(uint32_t i=0; i<default_font_atlas_size; ++i)
         le_decode_symbol(&stream, &new_model);
@@ -106,6 +143,7 @@ int main(void)
     GREATEST_INIT();
     
     RUN_TEST(symbols);
+    RUN_TEST(symbols_static);
     RUN_TEST(delta);
     RUN_TEST(overrun);
 
