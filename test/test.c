@@ -49,6 +49,7 @@ TEST symbols_static(void)
 
     le_model model;
     le_static_model_init(&model, histogram, LE_ALPHABET_SIZE);
+    uint8_t initial_k = model.k;
 
     // 3. Encode symbols
     le_begin_encode(&stream);
@@ -61,7 +62,7 @@ TEST symbols_static(void)
     le_begin_decode(&stream);
 
     le_model new_model;
-    le_static_model_init(&new_model, histogram, LE_ALPHABET_SIZE);
+    le_static_model_load(&new_model, model.alphabet, LE_ALPHABET_SIZE, initial_k);
 
     for (uint32_t i = 0; i < default_font_atlas_size; ++i)
         ASSERT_EQ(default_font_atlas[i], le_decode_symbol(&stream, &new_model));

@@ -334,7 +334,7 @@ static inline void le_static_model_init(le_model *model, const uint32_t* histogr
 
         for (uint32_t index = 0; index < LE_ALPHABET_SIZE; ++index)
         {
-            uint8_t count = freq_table[index].count;
+            uint32_t count = freq_table[index].count;
             if (count == 0) continue;
 
             uint32_t q = index >> candidate_k;
@@ -356,14 +356,14 @@ static inline void le_static_model_init(le_model *model, const uint32_t* histogr
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline void le_static_model_load(le_model *model, const uint8_t* alphabet, uint8_t num_symbols, uint8_t k)
+static inline void le_static_model_load(le_model *model, const uint8_t* alphabet, uint32_t num_symbols, uint8_t k)
 {
     *model = (le_model) {0};
     memcpy(model->alphabet, alphabet, num_symbols);
     model->is_static = true;
     model->k = k;
 
-    for (uint32_t i = 0; i < LE_ALPHABET_SIZE; ++i)
+    for (uint32_t i = 0; i < num_symbols; ++i)
         model->index[model->alphabet[i]] = (uint8_t)i;
 }
 
