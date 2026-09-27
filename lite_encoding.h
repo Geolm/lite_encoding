@@ -40,6 +40,8 @@ real-time compression tasks (e.g., texture transcoding, delta signaling).
         during promotion to prevent high-frequency jitter in the alphabet 
         ranking, ensuring stability in textures with localized noise.
 
+  - Static model : user provides an histogram and the best k is computed.
+
   - Soft K adaptation
         Updates k after LE_K_TREND_THRESHOLD consecutive change signals.
 
@@ -115,6 +117,7 @@ typedef struct le_model
     uint8_t index[LE_ALPHABET_SIZE];
     uint8_t k;  // rice k-value
     int8_t k_trend;
+    uint16_t num_symbols;
     bool is_static;
 } le_model;
 
@@ -283,10 +286,11 @@ static inline void le_dynamic_model_init(le_model *model)
     model->k = 2;
     model->k_trend = 0;
     model->is_static = false;
+    model->num_symbols = (uint16_t) LE_ALPHABET_SIZE;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline void le_static_model_init(le_model *model, const uint32_t* histogram, uint32_t num_symbols)
+static void le_static_model_init(le_model *model, const uint32_t* histogram, uint32_t num_symbols)
 {
     assert(num_symbols && num_symbols <= LE_ALPHABET_SIZE);
 
@@ -350,6 +354,16 @@ static inline void le_static_model_init(le_model *model, const uint32_t* histogr
         }
     }
 
+    // compute the actual number of symbols as it could be lower if some symbols are not in stream
+    for(uint32_t i=0; i<num_symbols; ++i)
+    {
+        if (freq_table[i].count == 0)
+        {
+            model->num_symbols = (uint16_t)i;
+            break;
+        }
+    }
+
     model->k = best_k;
     model->k_trend = 0;
     model->is_static = true;
@@ -362,6 +376,7 @@ static inline void le_static_model_load(le_model *model, const uint8_t* alphabet
     memcpy(model->alphabet, alphabet, num_symbols);
     model->is_static = true;
     model->k = k;
+    model->num_symbols = (uint16_t)num_symbols;
 
     for (uint32_t i = 0; i < num_symbols; ++i)
         model->index[model->alphabet[i]] = (uint8_t)i;
@@ -472,8 +487,10 @@ static inline void le_encode_symbol(le_stream *s, le_model *model, uint8_t value
 
     rice_encode(s, index, model->k);
     if (!model->is_static)
+    {
         le_model_promote(model, index);
-    le_model_update_k(model, (uint8_t)index);
+        le_model_update_k(model, (uint8_t)index);
+    }
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -483,8 +500,10 @@ static inline uint8_t le_decode_symbol(le_stream *restrict s, le_model *restrict
     uint8_t value = model->alphabet[index];
 
     if (!model->is_static)
+    {
         le_model_promote(model, index);
-    le_model_update_k(model, index);
+        le_model_update_k(model, (uint8_t)index);
+    }
 
     return value;
 }

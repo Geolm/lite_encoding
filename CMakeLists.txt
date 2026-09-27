@@ -10,8 +10,8 @@ set(CMAKE_C_STANDARD 11)
 if(MSVC)
     set(CMAKE_C_FLAGS_DEBUG "/W3 /Zi")
 else()
-    set(CMAKE_C_FLAGS_DEBUG "-g -O0 -DDEBUG -Wpedantic -Werror -Wall -Wextra")
-    set(CMAKE_C_FLAGS_RELEASE "-O3 -Wpedantic -Werror -Wall -Wextra")
+    set(CMAKE_C_FLAGS_DEBUG "-g -O0 -DDEBUG -Wpedantic -Werror -Wall -Wextra -Wstrict-prototypes -Wgnu-empty-initializer -Wnewline-eof")
+    set(CMAKE_C_FLAGS_RELEASE "-g -O3 -Wpedantic -Werror -Wall -Wextra -Wstrict-prototypes -Wgnu-empty-initializer -Wnewline-eof")
 endif()
 
 add_executable(test
