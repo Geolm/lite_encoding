@@ -379,11 +379,12 @@ static inline void le_static_model_load(le_model *model, const uint8_t* alphabet
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline void rice_encode(le_stream *s, uint32_t value, uint8_t k) 
+static inline void rice_encode(le_stream *s, uint8_t value, uint8_t k) 
 {
-    uint32_t q = value >> k;
+    k = (k < LE_Q_ESCAPE_SIZE) ? k : LE_Q_ESCAPE_SIZE-1;
+    uint32_t q = (uint32_t)value >> k;
     uint32_t q_limit = q_escape_for_k[k];
-    uint32_t r = value & ((1U << k) - 1U);
+    uint32_t r = (uint32_t)value & ((1U << k) - 1U);
 
     // checks if raw value is cheaper
     q = (q >= q_limit) ? q_limit : q;
@@ -401,6 +402,7 @@ static inline void rice_encode(le_stream *s, uint32_t value, uint8_t k)
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline uint8_t rice_decode(le_stream *s, uint8_t k) 
 {
+    k = (k < LE_Q_ESCAPE_SIZE) ? k : LE_Q_ESCAPE_SIZE-1;
     if (s->bits_available < 32) 
         le_refill(s);
 
