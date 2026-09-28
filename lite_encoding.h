@@ -290,7 +290,7 @@ static inline void le_dynamic_model_init(le_model *model)
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static void le_static_model_init(le_model *model, const uint32_t* histogram, uint32_t num_symbols)
+static inline void le_static_model_init(le_model *model, const uint32_t* histogram, uint32_t num_symbols)
 {
     assert(num_symbols && num_symbols <= LE_ALPHABET_SIZE);
 
@@ -355,15 +355,11 @@ static void le_static_model_init(le_model *model, const uint32_t* histogram, uin
     }
 
     // compute the actual number of symbols as it could be lower if some symbols are not in stream
-    for(uint32_t i=0; i<num_symbols; ++i)
-    {
-        if (freq_table[i].count == 0)
-        {
-            model->num_symbols = (uint16_t)i;
-            break;
-        }
-    }
+    uint32_t i=0;
+    while (i<num_symbols && freq_table[i].count > 0)
+        i++;
 
+    model->num_symbols = (uint16_t)i;
     model->k = best_k;
     model->k_trend = 0;
     model->is_static = true;
