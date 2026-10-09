@@ -14,18 +14,18 @@ Unlike standard MTF, this library uses a low-pass promotion strategy (target = i
 
 ### Soft K Adaptation
 
-The library employs a "Soft K" mechanism to track data magnitude trends. Instead of switching the Rice parameter $k$ immediately upon seeing a large value, it maintains a `k_trend` counter.
+The library employs a "Soft K" mechanism to track data magnitude trends. Instead of switching the Rice parameter `k` immediately upon seeing a large value, it maintains a `k_trend` counter.
 
-$k$ only increments or decrements when the trend exceeds `LE_K_TREND_THRESHOLD` (12). This heuristic ensures that the coder remains stable in the presence of noise while eventually adapting to new statistical regions in the bitstream.
+`k` only increments or decrements when the trend exceeds `LE_K_TREND_THRESHOLD` (12). This heuristic ensures that the coder remains stable in the presence of noise while eventually adapting to new statistical regions in the bitstream.
 
 ### Rice Coder & Escape
 
-A value is split into a quotient $q = \texttt{value} \gg k$ and a remainder $r = \texttt{value} \& ((1 \ll k) - 1)$, written as $q$ ones, a single zero, then $k$ bits of $r$.
+A value is split into a quotient `q = value >> k` and a remainder `r = value & ((1 << k) - 1)`, written as `q` ones, a single zero, then `k` bits of `r`.
 
-Values with $q \ge \texttt{q\_escape}$ are written in "escape" form instead: $\texttt{q\_escape}$ ones, a zero, and the full value as a raw byte. This bounds the worst-case cost and keeps every read inside the 64-bit reservoir:
+Values with `q >= q_escape` are written in "escape" form instead: `q_escape` ones, a zero, and the full value as a raw byte. This bounds the worst-case cost and keeps every read inside the 64-bit reservoir:
 
-- **Dynamic models** use the fixed `q_escape_for_k` table (4 for $k \le 6$, i.e. no escape; 255 otherwise).
-- **Static models** store their own `q_escape` in the model, chosen jointly with $k$ at init time to minimize total bits for the given histogram.
+- **Dynamic models** use the fixed `q_escape_for_k` table (4 for `k` <= 6, i.e. no escape; 255 otherwise).
+- **Static models** store their own `q_escape` in the model, chosen jointly with `k` at init time to minimize total bits for the given histogram.
 
 ---
 
@@ -33,9 +33,9 @@ Values with $q \ge \texttt{q\_escape}$ are written in "escape" form instead: $\t
 
 | Function | Usage |
 |------:|------:|
-| `le_dynamic_model_init(model)` | Adaptive model: identity alphabet, $k=2$. Adapts via MTF promotion + soft K. |
-| `le_static_model_init(model, histogram, num_symbols)` | Builds a sorted alphabet from a user histogram and searches the best $(k, \texttt{q\_escape})$ pair. Never adapts. |
-| `le_static_model_load(model, alphabet, num_symbols, k, q_escape)` | Decoder side: reconstructs a static model from the serialized state (one byte per alphabet entry, plus $k$ and $\texttt{q\_escape}$). |
+| `le_dynamic_model_init(model)` | Adaptive model: identity alphabet, `k = 2`. Adapts via MTF promotion + soft K. |
+| `le_static_model_init(model, histogram, num_symbols)` | Builds a sorted alphabet from a user histogram and searches the best `(k, q_escape)` pair. Never adapts. |
+| `le_static_model_load(model, alphabet, num_symbols, k, q_escape)` | Decoder side: reconstructs a static model from the serialized state (one byte per alphabet entry, plus `k` and `q_escape`). |
 
 Maximize efficiency through specialization: use **multiple** model instances to track different data streams. One model per data type ensures the history remains relevant and the compression stays tight.
 
