@@ -83,7 +83,7 @@ USAGE:
     #define le_ctz64(mask) (uint32_t)__builtin_ctzll(mask)
 #endif
 
-static const uint8_t q_escape_for_k[LE_Q_ESCAPE_SIZE] = {16, 10, 4, 6, 255, 255, 255, 255, 255, 255};
+static const uint8_t q_escape_for_k[LE_Q_ESCAPE_SIZE] = {4, 4, 4, 4, 4, 4, 4, 255, 255, 255};
 
 typedef enum le_status
 {
@@ -116,6 +116,7 @@ typedef struct le_model
     uint8_t alphabet[LE_ALPHABET_SIZE];
     uint8_t index[LE_ALPHABET_SIZE];
     uint8_t k;  // rice k-value
+    uint8_t q_escape;
     int8_t k_trend;
     uint16_t num_symbols;
     bool is_static;
@@ -328,29 +329,54 @@ static inline void le_static_model_init(le_model *model, const uint32_t* histogr
         model->index[sym] = (uint8_t)i;
     }
 
+    // search the best (k, q_escape) pair: with q_escape = Q, every rank with q = rank >> k >= Q is written
+    // as Q unary bits + 1 zero bit + 1 raw byte (Q + 9 bits), the others use normal rice (q + 1 + k bits)
     uint8_t best_k = 2;
+    uint8_t best_q_escape = q_escape_for_k[2];
     uint64_t min_total_bits = UINT64_MAX;
+
+    uint64_t q_count[LE_ALPHABET_SIZE]; // rank counts bucketed by q = rank >> k
 
     for (uint8_t candidate_k = 0; candidate_k < 8; ++candidate_k)
     {
-        uint64_t total_bits = 0;
-        uint32_t q_limit = q_escape_for_k[candidate_k];
+        uint32_t max_q = 0;
+        uint64_t suffix = 0; // count of the ranks with q >= current Q
 
+        memset(q_count, 0, sizeof(q_count));
         for (uint32_t index = 0; index < LE_ALPHABET_SIZE; ++index)
         {
             uint32_t count = freq_table[index].count;
             if (count == 0) continue;
 
             uint32_t q = index >> candidate_k;
-            uint32_t bits = (q >= q_limit) ? (q_limit + 1 + 8) : (q + 1 + candidate_k);
-
-            total_bits += (uint64_t)count * bits;
+            q_count[q] += count;
+            suffix += count;
+            if (q > max_q)
+                max_q = q;
         }
 
-        if (total_bits < min_total_bits)
+        // beyond the largest q that occurs the escape never fires, so Q = max_q + 1 costs the same as any
+        // larger Q. the decoder refills its 64-bit reservoir only below 32 bits, so every read must stay
+        // under 32 bits: Q + 1 for the escape flag, q + 1 + k for the rice value
+        uint32_t max_q_escape = max_q + 1;
+        if (max_q_escape > 31)
+            max_q_escape = 31;
+        if (max_q_escape > 32 - candidate_k)
+            max_q_escape = 32 - candidate_k;
+
+        uint64_t prefix = 0; // bits of the ranks with q < current Q, written with normal rice
+        for (uint32_t q = 1; q <= max_q_escape; ++q)
         {
-            min_total_bits = total_bits;
-            best_k = candidate_k;
+            suffix -= q_count[q - 1];
+            prefix += q_count[q - 1] * (q + candidate_k); // a rank with q' = q - 1 costs q' + 1 + k = q + k bits
+
+            uint64_t total_bits = suffix * (q + 9) + prefix;
+            if (total_bits < min_total_bits)
+            {
+                min_total_bits = total_bits;
+                best_k = candidate_k;
+                best_q_escape = (uint8_t)q;
+            }
         }
     }
 
@@ -358,20 +384,22 @@ static inline void le_static_model_init(le_model *model, const uint32_t* histogr
     uint32_t i=0;
     while (i<num_symbols && freq_table[i].count > 0)
         i++;
-
+    
     model->num_symbols = (uint16_t)i;
     model->k = best_k;
+    model->q_escape = best_q_escape;
     model->k_trend = 0;
     model->is_static = true;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline void le_static_model_load(le_model *model, const uint8_t* alphabet, uint32_t num_symbols, uint8_t k)
+static inline void le_static_model_load(le_model *model, const uint8_t* alphabet, uint32_t num_symbols, uint8_t k, uint8_t q_escape)
 {
     *model = (le_model) {0};
     memcpy(model->alphabet, alphabet, num_symbols);
     model->is_static = true;
     model->k = k;
+    model->q_escape = q_escape;
     model->num_symbols = (uint16_t)num_symbols;
 
     for (uint32_t i = 0; i < num_symbols; ++i)
@@ -379,12 +407,11 @@ static inline void le_static_model_load(le_model *model, const uint8_t* alphabet
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline void rice_encode(le_stream *s, uint8_t value, uint8_t k) 
+static inline void rice_encode(le_stream *s, uint32_t value, uint8_t k, uint8_t q_escape) 
 {
-    k = (k < LE_Q_ESCAPE_SIZE) ? k : LE_Q_ESCAPE_SIZE-1;
-    uint32_t q = (uint32_t)value >> k;
-    uint32_t q_limit = q_escape_for_k[k];
-    uint32_t r = (uint32_t)value & ((1U << k) - 1U);
+    uint32_t q = value >> k;
+    uint32_t q_limit = q_escape;
+    uint32_t r = value & ((1U << k) - 1U);
 
     // checks if raw value is cheaper
     q = (q >= q_limit) ? q_limit : q;
@@ -400,14 +427,13 @@ static inline void rice_encode(le_stream *s, uint8_t value, uint8_t k)
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t rice_decode(le_stream *s, uint8_t k) 
+static inline uint8_t rice_decode(le_stream *s, uint8_t k, uint8_t q_escape) 
 {
-    k = (k < LE_Q_ESCAPE_SIZE) ? k : LE_Q_ESCAPE_SIZE-1;
     if (s->bits_available < 32) 
         le_refill(s);
 
     uint32_t q = le_ctz64(~s->bit_reservoir | (1ULL << 63));
-    uint32_t q_limit = q_escape_for_k[k];
+    uint32_t q_limit = q_escape;
 
     if (q >= q_limit)
     {
@@ -483,9 +509,14 @@ static inline void le_encode_symbol(le_stream *s, le_model *model, uint8_t value
 {
     uint32_t index = model->index[value];
 
-    rice_encode(s, index, model->k);
-    if (!model->is_static)
+    
+    if (model->is_static)
     {
+        rice_encode(s, index, model->k, model->q_escape);
+    }
+    else
+    {
+        rice_encode(s, index, model->k, q_escape_for_k[model->k]);
         le_model_promote(model, index);
         le_model_update_k(model, (uint8_t)index);
     }
@@ -494,7 +525,18 @@ static inline void le_encode_symbol(le_stream *s, le_model *model, uint8_t value
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline uint8_t le_decode_symbol(le_stream *restrict s, le_model *restrict model) 
 {
-    uint8_t index = rice_decode(s, model->k);
+    uint8_t index;
+
+    if (model->is_static)
+    {
+        index = rice_decode(s, model->k, model->q_escape);
+    }
+    else
+    {
+        index = rice_decode(s, model->k, q_escape_for_k[model->k]);
+    }
+
+    // the symbol must be read before the promotion, which shifts the alphabet entries
     uint8_t value = model->alphabet[index];
 
     if (!model->is_static)
@@ -521,14 +563,14 @@ static inline int8_t zigzag8_decode(uint8_t v)
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_encode_literal(le_stream *s, le_model* model, uint8_t value)
 {
-    rice_encode(s, value, model->k);
+    rice_encode(s, value, model->k, q_escape_for_k[model->k]);
     le_model_update_k(model, value);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline uint8_t le_decode_literal(le_stream* s, le_model* model)
 {
-    uint8_t value = rice_decode(s, model->k);
+    uint8_t value = rice_decode(s, model->k, q_escape_for_k[model->k]);
     le_model_update_k(model, value);
     return value;
 }
@@ -537,17 +579,16 @@ static inline uint8_t le_decode_literal(le_stream* s, le_model* model)
 static inline void le_encode_delta(le_stream *s, le_model* model, int8_t delta)
 {
     uint8_t zz = zigzag8_encode(delta);
-    rice_encode(s, zz, model->k);
+    rice_encode(s, zz, model->k, q_escape_for_k[model->k]);
     le_model_update_k(model, zz);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline int8_t le_decode_delta(le_stream* s, le_model* model)
 {
-    uint8_t zz = rice_decode(s, model->k);
+    uint8_t zz = rice_decode(s, model->k, q_escape_for_k[model->k]);
     le_model_update_k(model, zz);
     return zigzag8_decode(zz);
 }
 
 #endif
-

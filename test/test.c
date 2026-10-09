@@ -89,7 +89,7 @@ TEST symbols_static(void)
     le_begin_decode(&stream);
 
     le_model new_model;
-    le_static_model_load(&new_model, model.alphabet, LE_ALPHABET_SIZE, initial_k);
+    le_static_model_load(&new_model, model.alphabet, LE_ALPHABET_SIZE, initial_k, model.q_escape);
 
     for (uint32_t i = 0; i < default_font_atlas_size; ++i)
         ASSERT_EQ(default_font_atlas[i], le_decode_symbol(&stream, &new_model));
@@ -165,10 +165,11 @@ TEST overrun(void)
 
 
 /*
- * Rice coder: roundtrip every 8-bit value for k = 0..8.
- * k=8 is the largest value whose table entry exists (q_escape_for_k has 10
- * entries) and whose shifts are defined; values stay <= 255 so no escape is
- * taken and no undefined behavior is possible.
+ * Rice coder: roundtrip every 8-bit value for k = 0..8, paired with the
+ * matching q_escape_for_k table entry (k=8 is the largest value whose table
+ * entry exists and whose shifts are defined). For k <= 6 the escape threshold
+ * is 4, so most values take the raw-byte escape path; for k = 7..8 it is 255
+ * and no escape fires. Values stay <= 255 so no undefined behavior is possible.
  */
 TEST rice_all_values(void)
 {
@@ -181,7 +182,7 @@ TEST rice_all_values(void)
         le_begin_encode(&stream);
 
         for (uint32_t v = 0; v < 256; ++v)
-            rice_encode(&stream, v, k);
+            rice_encode(&stream, v, k, q_escape_for_k[k]);
 
         ASSERT_EQ(stream.status, LE_OK);
         size_t size = le_end_encode(&stream);
@@ -193,7 +194,7 @@ TEST rice_all_values(void)
 
         for (uint32_t v = 0; v < 256; ++v)
         {
-            uint8_t got = rice_decode(&stream, k);
+            uint8_t got = rice_decode(&stream, k, q_escape_for_k[k]);
             ASSERT_EQ((int)got, (int)v);
             ASSERT_EQ(stream.status, LE_OK);
         }
@@ -536,7 +537,7 @@ TEST static_model(void)
     le_begin_decode(&stream);
 
     le_model dec_model;
-    le_static_model_load(&dec_model, saved_alphabet, 16, initial_k);
+    le_static_model_load(&dec_model, saved_alphabet, 16, initial_k, model.q_escape);
 
     for (uint32_t i = 0; i < 512; ++i)
         ASSERT_EQ(saved_alphabet[i % 16], le_decode_symbol(&stream, &dec_model));
